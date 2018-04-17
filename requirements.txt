@@ -1,2 +1,6 @@
+--extra-index-url https://test.pypi.org/simple/
 Flask_SocketIO==2.9.6
 Flask==0.12.2
+aepp_sdk==0.1.2
+psycopg2==2.7.4
+eventlet==0.22.1
