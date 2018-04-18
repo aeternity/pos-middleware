@@ -48,10 +48,6 @@ bar_wallet_private = os.getenv('WALLET_PRIVATEKEY')
 bar_wallet_address = os.getenv('WALLET_PUBLICKEY')
 
 
-app = Flask(__name__)
-socketio = SocketIO(app)
-
-
 def authorize(request_key):
     """validate a request key"""
     if request_key == access_key:
@@ -142,20 +138,19 @@ class PG(object):
 def get_aeternity():
     """get the epoch client and the genesis keypair from config"""
     # configure epoch client in case we need it
-    if not hasattr(g, 'epoch'):
-        g.epoch = EpochClient(configs=Config(
-            external_host=epoch_node,
-            internal_host=f"{epoch_node}/internal",
-            secure_connection=True
-        ))
+
+    epoch = EpochClient(configs=Config(
+        external_host=epoch_node,
+        internal_host=f"{epoch_node}/internal",
+        secure_connection=True
+    ))
 
     # load the genesis keypair
-    if not hasattr(g, 'main_wallet'):
-        gp = bar_wallet_address
-        gk = bar_wallet_private
-        g.main_wallet = KeyPair.from_public_private_key_strings(gp, gk)
+    gp = bar_wallet_address
+    gk = bar_wallet_private
+    main_wallet = KeyPair.from_public_private_key_strings(gp, gk)
 
-    return g.epoch, g.main_wallet
+    return epoch, main_wallet
 
 
 def verify_signature(sender, signature, message):
@@ -174,6 +169,10 @@ def verify_signature(sender, signature, message):
 #
 
 
+app = Flask(__name__)
+socketio = SocketIO(app)
+
+
 @socketio.on('ping')
 def handle_ping():
     send("pong !!!!")
@@ -186,8 +185,7 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
 
     if tx is None:
         # transaction not recorded // search the chain for it
-        epoch, _ = get_aeternity()
-        etx = epoch.get_transaction_by_transaction_hash(tx_hash)
+        etx = g.epoch.get_transaction_by_transaction_hash(tx_hash)
         # if tx is not null (or no exception) then is ok
         if etx is None:
             reply = {
@@ -250,13 +248,12 @@ def handle_refund(access_key, wallet_address, amount):
             f"refund: unauthorized access using key {access_key}, wallet {wallet_address}, amount: {amount}")
         return
     # run the refund
-    epoch, bar_keypair = get_aeternity()
 
     reply = {"success": False, "tx_hash": None, "msg": None}
     try:
-        resp, tx_hash = epoch.spend(keypair=bar_keypair,
-                                    recipient_pubkey=wallet_address,
-                                    amount=amount)
+        resp, tx_hash = g.epoch.spend(keypair=g.bar_wallet,
+                                      recipient_pubkey=wallet_address,
+                                      amount=amount)
         reply = {"success": True, "tx_hash": tx_hash, "msg": str(resp)}
     except Exception as e:
         reply['msg'] = str(e)
