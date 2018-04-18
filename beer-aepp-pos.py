@@ -7,8 +7,12 @@ import json
 from flask import Flask, render_template, g
 from flask_socketio import SocketIO, send, emit
 import psycopg2
+import psycopg2.extras
 import datetime
 import argparse
+import threading
+from queue import Queue
+import time
 
 # aeternity
 from aeternity import Config
@@ -34,12 +38,6 @@ formatter = logging.Formatter(
 ch.setFormatter(formatter)
 root.addHandler(ch)
 
-
-pg_host = os.getenv('POSTGRES_HOST')
-pg_user = os.getenv('POSTGRES_USER')
-pg_pass = os.getenv('POSTGRES_PASSWORD')
-pg_db = os.getenv('POSTGRES_DB')
-pg_schema = 'public'
 
 # app secret
 flask_secret = os.getenv('APP_SECRET')
@@ -95,57 +93,42 @@ def reload_settings():
 #
 
 
-def db_conn():
-    """Opens a new database connection if there is none yet for the
-    current application context.
-    """
-    if not hasattr(g, 'db'):
+class PG(object):
+    def __init__(self, host, user, password, database):
         connect_str = f"dbname='{pg_db}' user='{pg_user}' host='{pg_host}' password='{pg_pass}'"
         # use our connection values to establish a connection
-        g.db = psycopg2.connect(connect_str)
-        # row factory to get rows as dicts
+        self.conn = psycopg2.connect(connect_str)
 
-        def dict_factory(cursor, row):
-            d = {}
-            for idx, col in enumerate(cursor.description):
-                d[col[0]] = row[idx]
-            return d
-        g.db.row_factory = dict_factory
+    def execute(self, query, params=()):
+        """run a database update
+        :param query: the query string
+        :param params: the query parameteres
+        """
+        c = self.conn.cursor()
+        try:
+            # Insert a row of data
+            c.execute(query, params)
+            # Save (commit) the changes
+            self.conn.commit()
+        finally:
+            c.close()
 
-    return g.db
-
-
-def db_execute(query, params):
-    """run a database update
-    :param query: the query string
-    :param params: the query parameteres
-    """
-    c = db_conn().cursor()
-    try:
-        # Insert a row of data
-        c.execute(query, params)
-        # Save (commit) the changes
-        db_conn().commit()
-    finally:
-        c.close()
-
-
-def db_query(query, params=(), many=False):
-    """
-    run a database update
-    :param query: the query string
-    :param params: the query parameteres
-    """
-    c = db_conn().cursor()
-    try:
-        # Insert a row of data
-        c.execute(query, params)
-        if many:
-            return c.fetchall()
-        else:
-            return c.fetchone()
-    finally:
-        c.close()
+    def select(self, query, params=(), many=False):
+        """
+        run a database update
+        :param query: the query string
+        :param params: the query parameteres
+        """
+        c = self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        try:
+            # Insert a row of data
+            c.execute(query, params)
+            if many:
+                return c.fetchall()
+            else:
+                return c.fetchone()
+        finally:
+            c.close()
 
 #     ______  ____  ____       _       _____  ____  _____
 #   .' ___  ||_   ||   _|     / \     |_   _||_   \|_   _|
@@ -199,7 +182,7 @@ def handle_ping():
 @socketio.on('scan')
 def handle_scan(access_key, tx_hash, tx_signature, sender):
     # query the transactions
-    tx = db_query("select * from transactions where tx_hash = ?", tx_hash)
+    tx = g.db.select("select * from transactions where tx_hash = %s", tx_hash)
 
     if tx is None:
         # transaction not recorded // search the chain for it
@@ -240,8 +223,8 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
 
     # transaction is good
     # update the record
-    db_execute(
-        'update transactions set tx_signature=?, scanned_at = NOW() where tx_hash = ?',
+    g.db.execute(
+        'update transactions set tx_signature=%s, scanned_at = NOW() where tx_hash = %s',
         (tx_signature, tx_hash)
     )
     # reply
@@ -292,7 +275,8 @@ def handle_set_bar_state(access_key, state):
     reply = {"success": True, "msg": None}
     valid_states = ['open', 'closed', 'out_of_beers']
     if state in valid_states:
-        db_execute("update state set state = ?, updated_at = NOW()", (state,))
+        g.db.execute(
+            "update state set state = %s, updated_at = NOW()", (state,))
         # BROADCAST new status
         emit('bar_state', json.dumps({"state": state}), broadcast=True)
         logging.info(f"set_bar_state: new state {state}")
@@ -310,7 +294,7 @@ def handle_set_bar_state(access_key, state):
 @socketio.on('get_bar_state')
 def handle_get_bar_state():
     """reply to a bar state request"""
-    row = db_query('SELECT state FROM state LIMIT 1')
+    row = g.db.select('SELECT state FROM state LIMIT 1')
     emit('bar_state_reply', json.dumps(json.dumps({"state": row['state']})))
 
 #     ______  ____    ____  ______     ______
@@ -331,7 +315,39 @@ def cmd_start(args=None):
             for k in config:
                 os.environ[k] = config[k]
         reload_settings()
-    #
+
+    # incoming orders will be queued here and sent to the pos client
+    orders_queue = Queue()
+    # open db connection
+    pg_host = os.getenv('POSTGRES_HOST')
+    pg_user = os.getenv('POSTGRES_USER')
+    pg_pass = os.getenv('POSTGRES_PASSWORD')
+    pg_db = os.getenv('POSTGRES_DB')
+
+    epoch, bar = get_aeternity()
+    # backfround worker
+    pg1 = PG(pg_host, pg_user, pg_pass, pg_db)
+    crp = CashRegisterPoller(
+        pg1, epoch, bar, orders_queue, interval=args.polling_interval)
+    crp.start()
+    # flask context
+    with app.app_context():
+        # within this block, current_app points to app.
+        g.db = PG(pg_host, pg_user, pg_pass, pg_db)
+        g.epoch = epoch
+        g.bar_wallet = bar
+        g.orders_queue = orders_queue
+        
+        # emit an order to the client
+        def order_notify():
+            order = orders_queue.get()
+            logging.info("notifing frontend of new order")
+            emit("order_received", access_key, order)
+        # start the queue montior
+        thread = threading.Thread(target=order_notify, args=())
+        thread.daemon = True                            # Daemonize thread
+        thread.start()
+
     app.config['SECRET_KEY'] = flask_secret
     socketio.run(app)
 
@@ -346,6 +362,17 @@ if __name__ == '__main__':
                     'names': ['-c', '--config'],
                     'help':'use the configuration file instead of environment variables',
                     'default':None
+                },
+                {
+                    'names': ['-b', '--bar-polling-only'],
+                    'help':'only start the bar polling worker',
+                    'action': 'store_true',
+                    'default': False
+                },
+                {
+                    'names': ['-p', '--polling-interval'],
+                    'help':'polling interval in seconds',
+                    'default': 15
                 }
             ]
         }
