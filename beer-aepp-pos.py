@@ -297,6 +297,109 @@ def handle_get_bar_state():
     row = g.db.select('SELECT state FROM state LIMIT 1')
     emit('bar_state_reply', json.dumps(json.dumps({"state": row['state']})))
 
+
+#   ____      ____   ___   _______     ___  ____   ________  _______
+#  |_  _|    |_  _|.'   `.|_   __ \   |_  ||_  _| |_   __  ||_   __ \
+#    \ \  /\  / / /  .-.  \ | |__) |    | |_/ /     | |_ \_|  | |__) |
+#     \ \/  \/ /  | |   | | |  __ /     |  __'.     |  _| _   |  __ /
+#      \  /\  /   \  `-'  /_| |  \ \_  _| |  \ \_  _| |__/ | _| |  \ \_
+#       \/  \/     `.___.'|____| |___||____||____||________||____| |___|
+#
+
+
+class CashRegisterPoller(object):
+    """ 
+    Poll the bar account to look for transactions
+    """
+
+    def __init__(self,  db, epoch, bar_wallet, orders_queue, interval=15):
+        """ Constructor
+        :type db: PG
+        :param db: object for database connection
+        :type epoch: EpochClient
+        :param epoch: client to interatct with the chain
+        :type bar_wallet: KeyPair
+        :param bar_wallet: contains the bar wallet
+        :type orders_queue: Queue
+        :param orders_queue: where to send the orders when they appear on the chain
+        :type interval: int
+        :param interval: Check interval, in seconds
+        """
+        self.interval = interval
+        self.db = db
+        self.epoch = epoch
+        self.bar_wallet = bar_wallet
+        self.orders_queue = orders_queue
+
+    def start(self):
+        """start the polling """
+        # start the polling
+        thread = threading.Thread(target=self.run, args=())
+        thread.daemon = True                            # Daemonize thread
+        thread.start()
+
+    def run(self):
+        interval = 0
+        while True:
+            # sleep at the beginning
+            time.sleep(interval)
+            # Do something
+            print('Doing something imporant in the background')
+            row = self.db.select("select max(height) as h from blocks")
+            local_h = row['h']
+            chain_h = self.epoch.get_height()
+
+            logging.info(f"local height {local_h}, chain height {chain_h}")
+
+            if local_h == chain_h:
+                continue
+
+            while local_h < chain_h:
+                block_step = min(10, chain_h - local_h)
+                next_h = local_h + block_step
+                logging.info(f"query tx in block range {local_h}-{next_h}")
+                txs = self.epoch.get_transactions_in_block_range(
+                    local_h, next_h, tx_types=['spend_tx'])
+
+                for tx in txs:
+                    logging.info("block {:10} vsn:{:2} amount:{:4} from {} to {}".format(
+                        tx.block_height,
+                        tx.tx.vsn,
+                        tx.tx.amount,
+                        tx.tx.recipient,
+                        tx.tx.sender
+                    ))
+                    if tx.tx.recipient == self.bar_wallet.get_address():
+                        now = datetime.datetime.now()
+                        pos_tx = (
+                            tx.hash,
+                            tx.tx.sender,
+                            tx.tx.amount,
+                            tx.block_height,
+                            now
+                        )
+                        # insert block
+                        self.db.execute(
+                            'insert into blocks(height) values (%s) ON CONFLICT(height) DO NOTHING', (tx.block_height,))
+                        # record transaction
+                        self.db.execute(
+                            'insert into transactions(tx_hash, sender, amount, block_id, found_at) values (%s,%s,%s,%s)', pos_tx)
+                        # push it into the orders queue to notify the frontend
+                        self.orders_queue.put({
+                            'tx': pos_tx[0],
+                            'sender': pos_tx[1],
+                            'amount': pos_tx[2],
+                            'block_h':  pos_tx[3],
+                            'time':  pos_tx[4],
+                        })
+
+                local_h = next_h
+                # insert block
+                self.db.execute(
+                    'insert into blocks(height) values (%s) on conflict(height) do nothing', (local_h,))
+            interval = self.interval
+
+
 #     ______  ____    ____  ______     ______
 #   .' ___  ||_   \  /   _||_   _ `. .' ____ \
 #  / .'   \_|  |   \/   |    | | `. \| (___ \_|
