@@ -295,6 +295,16 @@ def handle_get_bar_state():
     emit('bar_state_reply', json.dumps(json.dumps({"state": row['state']})))
 
 
+@socketio.on('get_name')
+def handle_get_name(public_key):
+    """reverse mapping for the account name"""
+    row = g.db.select(
+        'select wallet_name from names where public_key = %s', (public_key,))
+    if row is not None:
+        send(row['wallet_name'])
+    else:
+        send('NOT FOUND')
+
 #   ____      ____   ___   _______     ___  ____   ________  _______
 #  |_  _|    |_  _|.'   `.|_   __ \   |_  ||_  _| |_   __  ||_   __ \
 #    \ \  /\  / / /  .-.  \ | |__) |    | |_/ /     | |_ \_|  | |__) |
