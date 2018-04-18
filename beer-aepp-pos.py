@@ -175,7 +175,7 @@ socketio = SocketIO(app)
 
 @socketio.on('ping')
 def handle_ping():
-    send("pong !!!!")
+    send("pong", json=True)
 
 
 @socketio.on('scan')
@@ -275,7 +275,7 @@ def handle_set_bar_state(access_key, state):
         g.db.execute(
             "update state set state = %s, updated_at = NOW()", (state,))
         # BROADCAST new status
-        emit('bar_state', json.dumps({"state": state}), broadcast=True)
+        emit('bar_state', {"state": state}, broadcast=True, josn=True)
         logging.info(f"set_bar_state: new state {state}")
     else:
         logging.error(
@@ -291,8 +291,8 @@ def handle_set_bar_state(access_key, state):
 @socketio.on('get_bar_state')
 def handle_get_bar_state():
     """reply to a bar state request"""
-    row = g.db.select('SELECT state FROM state LIMIT 1')
-    emit('bar_state_reply', json.dumps(json.dumps({"state": row['state']})))
+    row = g.db.select('select state from state limit 1')
+    send({"state": row['state']}, json=True)
 
 
 @socketio.on('get_name')
@@ -301,9 +301,9 @@ def handle_get_name(public_key):
     row = g.db.select(
         'select wallet_name from names where public_key = %s', (public_key,))
     if row is not None:
-        send(row['wallet_name'])
+        send({'name': row['wallet_name']}, json=True)
     else:
-        send('NOT FOUND')
+        send({'name': '404'}, json=True)
 
 #   ____      ____   ___   _______     ___  ____   ________  _______
 #  |_  _|    |_  _|.'   `.|_   __ \   |_  ||_  _| |_   __  ||_   __ \
@@ -447,7 +447,7 @@ def cmd_start(args=None):
         g.epoch = epoch
         g.bar_wallet = bar
         g.orders_queue = orders_queue
-        
+
         # emit an order to the client
         def order_notify():
             order = orders_queue.get()
