@@ -22,8 +22,8 @@ POSTGRES_DB="posapp",
 APP_SECRET="123123",
 POS_ACCESS_KEY="456456",
 EPOCH_NODE="aeterinty.node.xyz",
-WALLET_PRIVATEKEY="hex123123",
-WALLET_PUBLICKEY="ak$xyz"
+WALLET_PRIV="hex123123",
+WALLET_PUB="ak$xyz"
 ```
 
 or create a json file (ex. settings.json)
@@ -37,8 +37,8 @@ or create a json file (ex. settings.json)
   "APP_SECRET": "123123",
   "POS_ACCESS_KEY": "456456",
   "EPOCH_NODE": "aeterinty.node.xyz",
-  "WALLET_PRIVATEKEY": "hex123123",
-  "WALLET_PUBLICKEY": "ak$xyz"
+  "WALLET_PRIV": "hex123123",
+  "WALLET_PUB": "ak$xyz"
 }
 ```
 

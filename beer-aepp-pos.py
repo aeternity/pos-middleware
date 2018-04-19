@@ -44,8 +44,8 @@ flask_secret = os.getenv('APP_SECRET')
 access_key = os.getenv('POS_ACCESS_KEY')
 
 epoch_node = os.getenv('EPOCH_NODE')
-bar_wallet_private = os.getenv('WALLET_PRIVATEKEY')
-bar_wallet_address = os.getenv('WALLET_PUBLICKEY')
+bar_wallet_private = os.getenv('WALLET_PRIV')
+bar_wallet_address = os.getenv('WALLET_PUB')
 
 
 def authorize(request_key):
@@ -76,9 +76,9 @@ def reload_settings():
     global epoch_node
     epoch_node = os.getenv('EPOCH_NODE')
     global bar_wallet_private
-    bar_wallet_private = os.getenv('WALLET_PRIVATEKEY')
+    bar_wallet_private = os.getenv('WALLET_PRIV')
     global bar_wallet_address
-    bar_wallet_address = os.getenv('WALLET_PUBLICKEY')
+    bar_wallet_address = os.getenv('WALLET_PUB')
 
 #   ______   ______
 #  |_   _ `.|_   _ \
