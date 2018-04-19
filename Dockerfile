@@ -1,12 +1,14 @@
-FROM python:3-slim
+FROM python:3-alpine
 
 RUN apk update && \
   apk add --virtual build-deps gcc python-dev musl-dev && \
   apk add postgresql-dev
 
-ADD requirements.txt /data/requirements.txt
-ADD beer-aepp-pos.py /data/beer-aepp-pos.py
+ADD requirements.txt /requirements.txt
+RUN pip install -r /requirements.txt
 
-RUN pip install -r /data/requirements.txt
+ADD . /app
+WORKDIR /app
 
-ENTRYPOINT [ "/data/beer-aepp-pos.py" ]
+ENTRYPOINT [ "./beer-aepp-pos.py" ]
+CMD [ "start" ]
