@@ -10,5 +10,4 @@ RUN pip install -r /requirements.txt
 ADD . /app
 WORKDIR /app
 
-ENTRYPOINT [ "./beer-aepp-pos.py" ]
-CMD [ "start" ]
+ENTRYPOINT [ "./beer-aepp-pos.py", "start" ]

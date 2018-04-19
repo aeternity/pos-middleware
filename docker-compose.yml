@@ -1,10 +1,15 @@
 version: '3.1'
 services:
+  pos:
+    build: .
+    ports: [5000]
+    depends_on: [db]
+    command: -c settings.json
+
   db:
     image: postgres:10.3
     restart: unless-stopped
-    ports:
-      - 5432:5432
+    expose: [5432]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -16,8 +21,7 @@ services:
   adminer:
     image: adminer
     restart: unless-stopped
-    ports:
-      - 8090:8080
+    ports: ['8090:8080']
 
 volumes:
   posdb:
