@@ -4,8 +4,6 @@ import os
 import sys
 import logging
 import json
-from flask import Flask, render_template, g
-from flask_socketio import SocketIO, send, emit
 import psycopg2
 import psycopg2.extras
 import datetime
@@ -13,6 +11,11 @@ import argparse
 import threading
 from queue import Queue
 import time
+
+# flask
+from flask import Flask, render_template, g
+from flask_socketio import SocketIO, send, emit
+from posapp import socketio, create_app
 
 # aeternity
 from aeternity import Config
@@ -91,8 +94,7 @@ def reload_settings():
 
 class PG(object):
     def __init__(self, host, user, password, database):
-        connect_str = f"dbname='{pg_db}' user='{pg_user}' host='{pg_host}' password='{pg_pass}'"
-        # use our connection values to establish a connection
+        connect_str = f"dbname='{database}' user='{user}' host='{host}' password='{password}'"
         self.conn = psycopg2.connect(connect_str)
 
     def execute(self, query, params=()):
@@ -167,10 +169,6 @@ def verify_signature(sender, signature, message):
 #  | \____) |\  `-'  /\ `.___.'\ _| |  \ \_  _| |__/ |   _| |_   | |\  `-'  /
 #   \______.' `.___.'  `.____ .'|____||____||________|  |_____| [___]`.___.'
 #
-
-
-app = Flask(__name__)
-socketio = SocketIO(app)
 
 
 @socketio.on('ping')
@@ -434,6 +432,7 @@ def cmd_start(args=None):
     pg_pass = os.getenv('POSTGRES_PASSWORD')
     pg_db = os.getenv('POSTGRES_DB')
 
+    app = create_app(secret_key=flask_secret)
     epoch, bar = get_aeternity()
     # backfround worker
     pg1 = PG(pg_host, pg_user, pg_pass, pg_db)
@@ -458,7 +457,6 @@ def cmd_start(args=None):
         thread.daemon = True                            # Daemonize thread
         thread.start()
 
-    app.config['SECRET_KEY'] = flask_secret
     socketio.run(app)
 
 

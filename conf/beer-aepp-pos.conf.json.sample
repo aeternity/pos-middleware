@@ -6,6 +6,6 @@
   "APP_SECRET": "xyz123",
   "POS_ACCESS_KEY": "123xyz",
   "EPOCH_NODE": "127.0.0.1",
-  "WALLET_PRIVATEKEY": "xxxxxxxx",
-  "WALLET_PUBLICKEY": "ak$yyyyy"
+  "WALLET_PRIV": "xxxxxxxx",
+  "WALLET_PUB": "ak$yyyyy"
 }
