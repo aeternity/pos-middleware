@@ -1,6 +1,3 @@
-CREATE DATABASE posapp;
-GRANT ALL PRIVILEGES ON DATABASE posapp TO postgres;
-
 \connect posapp
 
 CREATE TABLE IF NOT EXISTS blocks (
@@ -33,4 +30,4 @@ CREATE TABLE IF NOT EXISTS names (
   public_key varchar(150)
 );
 
-CREATE UNIQUE INDEX 'names_public_key_idx' ON names(public_key);
+CREATE UNIQUE INDEX names_public_key_idx ON names(public_key);
