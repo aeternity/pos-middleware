@@ -278,7 +278,7 @@ def handle_set_bar_state(access_key, state):
         db.execute(
             "update state set state = %s, updated_at = NOW()", (state,))
         # BROADCAST new status
-        emit('bar_state', {"state": state}, broadcast=True, josn=True)
+        emit('bar_state', {"state": state}, broadcast=True, json=True)
         logging.info(f"set_bar_state: new state {state}")
     else:
         logging.error(
@@ -299,7 +299,7 @@ def handle_get_bar_state():
     db = get_db()
     row = db.select('select state from state limit 1')
     # send({"state": row['state']}, json=True)
-    emit('bar_state', {"state": state}, josn=True)
+    emit('bar_state', {"state": row['state']}, json=True)
     return {"state": row['state']}
 
 
