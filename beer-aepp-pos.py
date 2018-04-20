@@ -195,8 +195,8 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
                 "valid": False,
                 "msg": f"transaction doesn't exists"
             }
-            send(reply, json=True)
-            return
+            # send(reply, json=True)
+            return reply
 
     # tx has been already validated
     if tx['scanned_at'] is not None:
@@ -205,8 +205,8 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
             "valid": False,
             "msg": f"transaction executed at {tx['scanned_at']}"
         }
-        send(reply, json=True)
-        return
+        # send(reply, json=True)
+        return reply
 
     # verify_signature
     valid = verify_signature(sender, tx_signature, tx_hash)
@@ -218,8 +218,8 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
             "valid": False,
             "msg": f"transaction signature mismatch"
         }
-        send(reply, json=True)
-        return
+        # send(reply, json=True)
+        return reply
 
     # transaction is good
     # update the record
@@ -233,8 +233,8 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
         "valid": True,
         "msg": f"transaction executed at {tx['scanned_at']}"
     }
-    send(reply, json=True)
-
+    # send(reply, json=True)
+    return reply
 
 @socketio.on('refund')
 def handle_refund(access_key, wallet_address, amount):
@@ -288,7 +288,8 @@ def handle_set_bar_state(access_key, state):
             "msg": f"invalid state {state}, only {','.join(valid_states)} are allowed"
         }
     # reply to the sender
-    send(reply, json=True)
+    # send(reply, json=True)
+    return reply
 
 
 @socketio.on('get_bar_state')
@@ -297,7 +298,8 @@ def handle_get_bar_state():
     print('get_bar_state')
     db = get_db()
     row = db.select('select state from state limit 1')
-    send({"state": row['state']}, json=True)
+    # send({"state": row['state']}, json=True)
+    emit('bar_state', {"state": state}, josn=True)
     return {"state": row['state']}
 
 
