@@ -171,15 +171,19 @@ def verify_signature(sender, signature, message):
 #
 
 
-@socketio.on('ping')
-def handle_ping():
-    send("pong", json=True)
+@socketio.on('my_ping')
+def handle_my_ping():
+    # use this
+    emit('my_ping_response', 'pong')
+    # or this
+    return 'pong'
 
 
 @socketio.on('scan')
 def handle_scan(access_key, tx_hash, tx_signature, sender):
     # query the transactions
-    tx = g.db.select("select * from transactions where tx_hash = %s", tx_hash)
+    db = get_db()
+    tx = db.select("select * from transactions where tx_hash = %s", tx_hash)
 
     if tx is None:
         # transaction not recorded // search the chain for it
@@ -219,7 +223,7 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
 
     # transaction is good
     # update the record
-    g.db.execute(
+    db.execute(
         'update transactions set tx_signature=%s, scanned_at = NOW() where tx_hash = %s',
         (tx_signature, tx_hash)
     )
@@ -260,17 +264,18 @@ def handle_refund(access_key, wallet_address, amount):
 
 @socketio.on('set_bar_state')
 def handle_set_bar_state(access_key, state):
-
+    print('handle_set_bar_state')
     # check the authorization
     if not authorize(access_key):
         logging.error(
             f"refund: unauthorized access using key {access_key}, state {state}")
         return
     # run the update
+    db = get_db()
     reply = {"success": True, "msg": None}
     valid_states = ['open', 'closed', 'out_of_beers']
     if state in valid_states:
-        g.db.execute(
+        db.execute(
             "update state set state = %s, updated_at = NOW()", (state,))
         # BROADCAST new status
         emit('bar_state', {"state": state}, broadcast=True, josn=True)
@@ -289,14 +294,18 @@ def handle_set_bar_state(access_key, state):
 @socketio.on('get_bar_state')
 def handle_get_bar_state():
     """reply to a bar state request"""
-    row = g.db.select('select state from state limit 1')
+    print('get_bar_state')
+    db = get_db()
+    row = db.select('select state from state limit 1')
     send({"state": row['state']}, json=True)
+    return {"state": row['state']}
 
 
 @socketio.on('get_name')
 def handle_get_name(public_key):
     """reverse mapping for the account name"""
-    row = g.db.select(
+    db = get_db()
+    row = db.select(
         'select wallet_name from names where public_key = %s', (public_key,))
     if row is not None:
         send({'name': row['wallet_name']}, json=True)
@@ -313,7 +322,7 @@ def handle_get_name(public_key):
 
 
 class CashRegisterPoller(object):
-    """ 
+    """
     Poll the bar account to look for transactions
     """
 
@@ -412,6 +421,16 @@ class CashRegisterPoller(object):
 #  \ `.___.'\ _| |_\/_| |_  _| |_.' /| \____) |
 #   `.____ .'|_____||_____||______.'  \______.'
 #
+
+def get_db():
+    if not hasattr(g, 'db'):
+        print('creating database singleton')
+        pg_host = os.getenv('POSTGRES_HOST')
+        pg_user = os.getenv('POSTGRES_USER')
+        pg_pass = os.getenv('POSTGRES_PASSWORD')
+        pg_db = os.getenv('POSTGRES_DB')
+        g.db = PG(pg_host, pg_user, pg_pass, pg_db)
+    return g.db
 
 
 def cmd_start(args=None):
