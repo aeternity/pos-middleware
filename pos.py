@@ -16,6 +16,7 @@ import time
 from flask import Flask, render_template, g, jsonify, abort
 from flask_socketio import SocketIO, send, emit
 
+
 # aeternity
 from aeternity import Config
 from aeternity.signing import KeyPair
@@ -27,6 +28,8 @@ from aeternity.exceptions import AException
 from ecdsa import SECP256k1, SigningKey, VerifyingKey
 import ecdsa
 import base58
+import base64
+from hashlib import sha256
 
 
 # also log to stdout because docker
@@ -36,9 +39,11 @@ root.setLevel(logging.DEBUG)
 ch = logging.StreamHandler(sys.stdout)
 ch.setLevel(logging.DEBUG)
 formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(msg)s')
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 ch.setFormatter(formatter)
 root.addHandler(ch)
+
 
 logging.getLogger("aeternity.epoch").setLevel(logging.WARNING)
 logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
@@ -154,6 +159,8 @@ def get_aeternity():
         secure_connection=True
     ))
 
+    logging.info(f"using node at {epoch_node}")
+
     # load the genesis keypair
     gp = bar_wallet_address
     gk = bar_wallet_private
@@ -162,12 +169,37 @@ def get_aeternity():
     return epoch, main_wallet
 
 
-def verify_signature(sender, signature, message):
-    sender_pub = base58.b58decode_check(sender[3:])
-    vk = VerifyingKey.from_string(sender_pub, curve=SECP256k1)
-    verified = vk.verify(signature, message,
-                         sigdecode=ecdsa.util.sigdecode_der)
+def verify_signature(sender, signature_b64, message):
+    """
+    :param sender: the sender address
+    :param signature_b64: signature
+    :param message: message
+    """
+    verified = False
+    try:
+      
+      signature = base64.b64decode(signature_b64)
+
+      sender_pub = base58.b58decode_check(sender[3:])
+      logging.debug(
+          f"sign  sender: {sender_pub} signature {signature} tx: {message}")
+
+      vk = VerifyingKey.from_string(
+          sender_pub[1:], curve=SECP256k1, hashfunc=sha256)
+
+      verified = vk.verify(signature, bytearray(
+          message , 'utf-8'), sigdecode=ecdsa.util.sigdecode_der)
+    except:
+      verified = False
+    
+    logging.debug(
+        f"sign  sender: '{sender}' signature '{signature_b64}' tx: {message}, verified {verified}")
     return verified
+      
+    
+
+def get_tx(tx_hash):
+    pass
 
 #    ______     ___      ______  ___  ____   ________  _________  _    ___
 #  .' ____ \  .'   `.  .' ___  ||_  ||_  _| |_   __  ||  _   _  |(_) .'   `.
@@ -180,62 +212,84 @@ def verify_signature(sender, signature, message):
 
 socketio = SocketIO()
 app = Flask(__name__)
+root.addHandler(app.logger)
 
 
 @socketio.on('scan')
-def handle_scan(access_key, tx_hash, tx_signature, sender):
+def handle_scan(access_key, tx_hash, tx_signature):
     # query the transactions
-    tx = database.select("select * from transactions where tx_hash = %s", tx_hash)
+    tx = database.select(
+        "select * from transactions where tx_hash = %s", (tx_hash,))
 
     if tx is None:
         # transaction not recorded // search the chain for it
-        etx = epoch.get_transaction_by_transaction_hash(tx_hash)
+        # etx = epoch.get_transaction_by_transaction_hash(tx_hash)
         # if tx is not null (or no exception) then is ok
-        if etx is None:
-            reply = {
-                "tx_hash": tx_hash,
-                "valid": False,
-                "msg": f"transaction doesn't exists"
-            }
-            send(reply, json=True)
-            return
+        #if etx is None:
+        reply = {
+            "tx_hash": tx_hash,
+            "success": False,
+            "msg": f"transaction doesn't exists"
+        }
+        return reply
+        
+
 
     # tx has been already validated
     if tx['scanned_at'] is not None:
         reply = {
             "tx_hash": tx_hash,
-            "valid": False,
+            "success": False,
             "msg": f"transaction executed at {tx['scanned_at']}"
         }
-        send(reply, json=True)
-        return
+        return reply
 
     # verify_signature
-    valid = verify_signature(sender, tx_signature, tx_hash)
+    logging.debug(f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
+    valid = verify_signature(tx['sender'], tx_signature, tx_hash)
 
     if not valid:
         # transaction is not valids
         reply = {
             "tx_hash": tx_hash,
-            "valid": False,
+            "success": False,
             "msg": f"transaction signature mismatch"
         }
-        send(reply, json=True)
-        return
+        return reply
 
     # transaction is good
     # update the record
+    now = datetime.datetime.now()
     database.execute(
-        'update transactions set tx_signature=%s, scanned_at = NOW() where tx_hash = %s',
-        (tx_signature, tx_hash)
+        'update transactions set tx_signature=%s, scanned_at = %s where tx_hash = %s',
+        (tx_signature, now, tx_hash)
     )
     # reply
     reply = {
         "tx_hash": tx_hash,
-        "valid": True,
-        "msg": f"transaction executed at {tx['scanned_at']}"
+        "success": True,
+        "msg": f"transaction executed at {str(now)}"
     }
-    send(reply, json=True)
+    return reply
+
+
+@socketio.on('was_beer_scanned')
+def handle_was_beer_scanned(tx_hash):
+    """check if the trasaction was scanned"""
+    tx = database.select("select * from transactions where tx_hash = %s", (tx_hash,))
+
+    reply = {"scanned": False, "scanned_at": None}
+
+    if tx is None:
+        return reply
+
+    if tx['scanned_at'] is not None:
+        reply = {
+            "scanned": True,
+            "scanned_at": str(tx['scanned_at'])
+        }
+        
+    return reply
 
 
 @socketio.on('refund')
@@ -249,19 +303,21 @@ def handle_refund(access_key, wallet_address, amount):
     # check the authorization
     if not authorize(access_key):
         logging.error(
-            f"refund: unauthorized access using key {access_key}, wallet {wallet_address}, amount: {amount}")
+            f"refund: unauthorized access using key '{access_key}', wallet '{wallet_address}', amount: '{amount}'")
         return
     # run the refund
 
     reply = {"success": False, "tx_hash": None, "msg": None}
     try:
-        resp, tx_hash = epoch.spend(keypair=g.bar_wallet,
-                                      recipient_pubkey=wallet_address,
-                                      amount=amount)
+        logging.debug(
+            f"from '{bar_wallet.get_address()}', to '{wallet_address}', amount '{amount}'")
+        resp, tx_hash = epoch.spend(keypair=bar_wallet,
+                                    recipient_pubkey=wallet_address,
+                                    amount=int(amount))
         reply = {"success": True, "tx_hash": tx_hash, "msg": str(resp)}
     except Exception as e:
         reply['msg'] = str(e)
-    send(reply, json=True)
+    return reply
 
 
 @socketio.on('set_bar_state')
@@ -289,14 +345,14 @@ def handle_set_bar_state(access_key, state):
             "msg": f"invalid state {state}, only {','.join(valid_states)} are allowed"
         }
     # reply to the sender
-    send(reply, json=True)
+    return reply
 
 
 @socketio.on('get_bar_state')
 def handle_get_bar_state():
     """reply to a bar state request"""
     row = database.select('select state from state limit 1')
-    send({"state": row['state']}, json=True)
+    return {"state": row['state']}
 
 
 @socketio.on('get_name')
@@ -305,9 +361,9 @@ def handle_get_name(public_key):
     row = database.select(
         'select wallet_name from names where public_key = %s', (public_key,))
     if row is not None:
-        send({'name': row['wallet_name']}, json=True)
+        return {'name': row['wallet_name']}
     else:
-        send({'name': '404'}, json=True)
+        return {'name': None}
 
 
 @app.route('/rest/name/<public_key>')
@@ -319,6 +375,7 @@ def rest_get_name(public_key):
         reply = {"name": row['wallet_name']}
         return jsonify(reply)
     abort(404)
+
 
 # global db variable
 database = None
@@ -411,7 +468,7 @@ class CashRegisterPoller(object):
                             'insert into blocks(height) values (%s) ON CONFLICT(height) DO NOTHING', (tx.block_height,))
                         # record transaction
                         self.db.execute(
-                            'insert into transactions(tx_hash, sender, amount, block_id, found_at) values (%s,%s,%s,%s,%s)', pos_tx)
+                            'insert into transactions(tx_hash, sender, amount, block_id, found_at) values (%s,%s,%s,%s,%s) on conflict(tx_hash) do nothing', pos_tx)
                         # push it into the orders queue to notify the frontend
                         self.orders_queue.put({
                             'tx': pos_tx[0],
@@ -425,7 +482,6 @@ class CashRegisterPoller(object):
                 # insert block
                 self.db.execute(
                     'insert into blocks(height) values (%s) on conflict(height) do nothing', (local_h,))
-            
 
 
 #     ______  ____    ____  ______     ______
@@ -462,7 +518,6 @@ def cmd_start(args=None):
     global bar_wallet
     epoch, bar_wallet = get_aeternity()
 
-    
     # backfround worker
     if not args.no_poll:
         pg1 = PG(pg_host, pg_user, pg_pass, pg_db)
@@ -470,7 +525,7 @@ def cmd_start(args=None):
             pg1, epoch, bar_wallet, orders_queue, interval=args.polling_interval)
         crp.start()
     # flask context
-    #with app.app_context():
+    # with app.app_context():
         # within this block, current_app points to app.
 
         # # emit an order to the client
@@ -484,7 +539,8 @@ def cmd_start(args=None):
         # thread.start()
     print('start socket.io')
     socketio.init_app(app)
-    socketio.run(app)
+    socketio.run(app, host="0.0.0.0")
+
 
 
 if __name__ == '__main__':
@@ -508,7 +564,7 @@ if __name__ == '__main__':
                     'names': ['-p', '--polling-interval'],
                     'help':'polling interval in seconds',
                     'default': 15
-                }
+                } 
             ]
         }
     ]
