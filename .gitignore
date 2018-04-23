@@ -1,0 +1,6 @@
+settings.json
+beer-aepp-pos.conf.json
+.vscode
+docker-compose.override.yml
+venv
+__pycache__/
