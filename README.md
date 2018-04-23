@@ -69,7 +69,6 @@ params:
   - access_key   : shared secret to authorize the pos app
   - tx_hash      : scanned transaction hash
   - tx_signature : signature of the transaction hash
-  - sender       : sender public key
 reply:
   - tx_hash : transaction hash
   - valid   : true if the order is vaild, false otherwise

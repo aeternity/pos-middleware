@@ -13,9 +13,8 @@ from queue import Queue
 import time
 
 # flask
-from flask import Flask, render_template, g
+from flask import Flask, render_template, g, jsonify, abort
 from flask_socketio import SocketIO, send, emit
-from posapp import socketio, create_app
 
 # aeternity
 from aeternity import Config
@@ -41,6 +40,9 @@ formatter = logging.Formatter(
 ch.setFormatter(formatter)
 root.addHandler(ch)
 
+logging.getLogger("aeternity.epoch").setLevel(logging.WARNING)
+logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+
 
 # app secret
 flask_secret = os.getenv('APP_SECRET')
@@ -49,6 +51,9 @@ access_key = os.getenv('POS_ACCESS_KEY')
 epoch_node = os.getenv('EPOCH_NODE')
 bar_wallet_private = os.getenv('WALLET_PRIV')
 bar_wallet_address = os.getenv('WALLET_PUB')
+
+from flask import Flask
+from flask_socketio import SocketIO
 
 
 def authorize(request_key):
@@ -82,6 +87,7 @@ def reload_settings():
     bar_wallet_private = os.getenv('WALLET_PRIV')
     global bar_wallet_address
     bar_wallet_address = os.getenv('WALLET_PUB')
+
 
 #   ______   ______
 #  |_   _ `.|_   _ \
@@ -128,6 +134,7 @@ class PG(object):
         finally:
             c.close()
 
+
 #     ______  ____  ____       _       _____  ____  _____
 #   .' ___  ||_   ||   _|     / \     |_   _||_   \|_   _|
 #  / .'   \_|  | |__| |      / _ \      | |    |   \ | |
@@ -171,23 +178,18 @@ def verify_signature(sender, signature, message):
 #
 
 
-@socketio.on('my_ping')
-def handle_my_ping():
-    # use this
-    emit('my_ping_response', 'pong')
-    # or this
-    return 'pong'
+socketio = SocketIO()
+app = Flask(__name__)
 
 
 @socketio.on('scan')
 def handle_scan(access_key, tx_hash, tx_signature, sender):
     # query the transactions
-    db = get_db()
-    tx = db.select("select * from transactions where tx_hash = %s", tx_hash)
+    tx = database.select("select * from transactions where tx_hash = %s", tx_hash)
 
     if tx is None:
         # transaction not recorded // search the chain for it
-        etx = g.epoch.get_transaction_by_transaction_hash(tx_hash)
+        etx = epoch.get_transaction_by_transaction_hash(tx_hash)
         # if tx is not null (or no exception) then is ok
         if etx is None:
             reply = {
@@ -195,8 +197,8 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
                 "valid": False,
                 "msg": f"transaction doesn't exists"
             }
-            # send(reply, json=True)
-            return reply
+            send(reply, json=True)
+            return
 
     # tx has been already validated
     if tx['scanned_at'] is not None:
@@ -205,8 +207,8 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
             "valid": False,
             "msg": f"transaction executed at {tx['scanned_at']}"
         }
-        # send(reply, json=True)
-        return reply
+        send(reply, json=True)
+        return
 
     # verify_signature
     valid = verify_signature(sender, tx_signature, tx_hash)
@@ -218,12 +220,12 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
             "valid": False,
             "msg": f"transaction signature mismatch"
         }
-        # send(reply, json=True)
-        return reply
+        send(reply, json=True)
+        return
 
     # transaction is good
     # update the record
-    db.execute(
+    database.execute(
         'update transactions set tx_signature=%s, scanned_at = NOW() where tx_hash = %s',
         (tx_signature, tx_hash)
     )
@@ -233,8 +235,8 @@ def handle_scan(access_key, tx_hash, tx_signature, sender):
         "valid": True,
         "msg": f"transaction executed at {tx['scanned_at']}"
     }
-    # send(reply, json=True)
-    return reply
+    send(reply, json=True)
+
 
 @socketio.on('refund')
 def handle_refund(access_key, wallet_address, amount):
@@ -253,32 +255,31 @@ def handle_refund(access_key, wallet_address, amount):
 
     reply = {"success": False, "tx_hash": None, "msg": None}
     try:
-        resp, tx_hash = g.epoch.spend(keypair=g.bar_wallet,
+        resp, tx_hash = epoch.spend(keypair=g.bar_wallet,
                                       recipient_pubkey=wallet_address,
                                       amount=amount)
         reply = {"success": True, "tx_hash": tx_hash, "msg": str(resp)}
     except Exception as e:
         reply['msg'] = str(e)
-    emit('refund', json.dumps(reply))
+    send(reply)
 
 
 @socketio.on('set_bar_state')
 def handle_set_bar_state(access_key, state):
-    print('handle_set_bar_state')
+
     # check the authorization
     if not authorize(access_key):
         logging.error(
             f"refund: unauthorized access using key {access_key}, state {state}")
         return
     # run the update
-    db = get_db()
     reply = {"success": True, "msg": None}
     valid_states = ['open', 'closed', 'out_of_beers']
     if state in valid_states:
-        db.execute(
+        database.execute(
             "update state set state = %s, updated_at = NOW()", (state,))
         # BROADCAST new status
-        emit('bar_state', {"state": state}, broadcast=True, json=True)
+        emit('bar_state', {"state": state}, broadcast=True, josn=True)
         logging.info(f"set_bar_state: new state {state}")
     else:
         logging.error(
@@ -288,31 +289,40 @@ def handle_set_bar_state(access_key, state):
             "msg": f"invalid state {state}, only {','.join(valid_states)} are allowed"
         }
     # reply to the sender
-    # send(reply, json=True)
-    return reply
+    send(reply, json=True)
 
 
 @socketio.on('get_bar_state')
 def handle_get_bar_state():
     """reply to a bar state request"""
-    print('get_bar_state')
-    db = get_db()
-    row = db.select('select state from state limit 1')
-    # send({"state": row['state']}, json=True)
-    emit('bar_state', {"state": row['state']}, json=True)
-    return {"state": row['state']}
+    row = database.select('select state from state limit 1')
+    send({"state": row['state']}, json=True)
 
 
 @socketio.on('get_name')
 def handle_get_name(public_key):
     """reverse mapping for the account name"""
-    db = get_db()
-    row = db.select(
+    row = database.select(
         'select wallet_name from names where public_key = %s', (public_key,))
     if row is not None:
         send({'name': row['wallet_name']}, json=True)
     else:
         send({'name': '404'}, json=True)
+
+
+@app.route('/name/<public_key>')
+def rest_get_name(public_key):
+    """reverse mapping for the account name"""
+    row = database.select(
+        'select wallet_name from names where public_key = %s', (public_key,))
+    if row is not None:
+        reply = {"name": row['wallet_name']}
+        return jsonify(reply)
+    abort(404)
+
+# global db variable
+database = None
+
 
 #   ____      ____   ___   _______     ___  ____   ________  _______
 #  |_  _|    |_  _|.'   `.|_   __ \   |_  ||_  _| |_   __  ||_   __ \
@@ -324,7 +334,7 @@ def handle_get_name(public_key):
 
 
 class CashRegisterPoller(object):
-    """
+    """ 
     Poll the bar account to look for transactions
     """
 
@@ -359,8 +369,9 @@ class CashRegisterPoller(object):
         while True:
             # sleep at the beginning
             time.sleep(interval)
+            interval = self.interval
             # Do something
-            print('Doing something imporant in the background')
+            logging.info('polling chain...')
             row = self.db.select("select max(height) as h from blocks")
             local_h = row['h']
             chain_h = self.epoch.get_height()
@@ -386,6 +397,7 @@ class CashRegisterPoller(object):
                         tx.tx.sender
                     ))
                     if tx.tx.recipient == self.bar_wallet.get_address():
+                        logging.info("FOUND BAR TRANSACTION !!!!")
                         now = datetime.datetime.now()
                         pos_tx = (
                             tx.hash,
@@ -399,7 +411,7 @@ class CashRegisterPoller(object):
                             'insert into blocks(height) values (%s) ON CONFLICT(height) DO NOTHING', (tx.block_height,))
                         # record transaction
                         self.db.execute(
-                            'insert into transactions(tx_hash, sender, amount, block_id, found_at) values (%s,%s,%s,%s)', pos_tx)
+                            'insert into transactions(tx_hash, sender, amount, block_id, found_at) values (%s,%s,%s,%s,%s)', pos_tx)
                         # push it into the orders queue to notify the frontend
                         self.orders_queue.put({
                             'tx': pos_tx[0],
@@ -413,7 +425,7 @@ class CashRegisterPoller(object):
                 # insert block
                 self.db.execute(
                     'insert into blocks(height) values (%s) on conflict(height) do nothing', (local_h,))
-            interval = self.interval
+            
 
 
 #     ______  ____    ____  ______     ______
@@ -423,16 +435,6 @@ class CashRegisterPoller(object):
 #  \ `.___.'\ _| |_\/_| |_  _| |_.' /| \____) |
 #   `.____ .'|_____||_____||______.'  \______.'
 #
-
-def get_db():
-    if not hasattr(g, 'db'):
-        print('creating database singleton')
-        pg_host = os.getenv('POSTGRES_HOST')
-        pg_user = os.getenv('POSTGRES_USER')
-        pg_pass = os.getenv('POSTGRES_PASSWORD')
-        pg_db = os.getenv('POSTGRES_DB')
-        g.db = PG(pg_host, pg_user, pg_pass, pg_db)
-    return g.db
 
 
 def cmd_start(args=None):
@@ -453,32 +455,36 @@ def cmd_start(args=None):
     pg_pass = os.getenv('POSTGRES_PASSWORD')
     pg_db = os.getenv('POSTGRES_DB')
 
-    app = create_app(secret_key=flask_secret)
-    epoch, bar = get_aeternity()
+    app.config['SECRET_KEY'] = flask_secret
+    global database
+    database = PG(pg_host, pg_user, pg_pass, pg_db)
+    global epoch
+    global bar_wallet
+    epoch, bar_wallet = get_aeternity()
+
+    
     # backfround worker
-    pg1 = PG(pg_host, pg_user, pg_pass, pg_db)
-    crp = CashRegisterPoller(
-        pg1, epoch, bar, orders_queue, interval=args.polling_interval)
-    crp.start()
+    if not args.no_poll:
+        pg1 = PG(pg_host, pg_user, pg_pass, pg_db)
+        crp = CashRegisterPoller(
+            pg1, epoch, bar_wallet, orders_queue, interval=args.polling_interval)
+        crp.start()
     # flask context
-    with app.app_context():
+    #with app.app_context():
         # within this block, current_app points to app.
-        g.db = PG(pg_host, pg_user, pg_pass, pg_db)
-        g.epoch = epoch
-        g.bar_wallet = bar
-        g.orders_queue = orders_queue
 
-        # emit an order to the client
-        def order_notify():
-            order = orders_queue.get()
-            logging.info("notifing frontend of new order")
-            emit("order_received", access_key, order)
-        # start the queue montior
-        thread = threading.Thread(target=order_notify, args=())
-        thread.daemon = True                            # Daemonize thread
-        thread.start()
-
-    socketio.run(app, host='0.0.0.0')
+        # # emit an order to the client
+        # def order_notify():
+        #     order = orders_queue.get()
+        #     logging.info("notifing frontend of new order")
+        #     emit("order_received", access_key, order)
+        # # start the queue montior
+        # thread = threading.Thread(target=order_notify, args=())
+        # thread.daemon = True #                Daemonize thread
+        # thread.start()
+    print('start socket.io')
+    socketio.init_app(app)
+    socketio.run(app)
 
 
 if __name__ == '__main__':
@@ -493,8 +499,8 @@ if __name__ == '__main__':
                     'default':None
                 },
                 {
-                    'names': ['-b', '--bar-polling-only'],
-                    'help':'only start the bar polling worker',
+                    'names': ['-b', '--no-poll'],
+                    'help':'only start the socketio service not the chain polling worker',
                     'action': 'store_true',
                     'default': False
                 },
