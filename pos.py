@@ -240,13 +240,24 @@ def handle_scan(access_key, tx_hash, tx_signature):
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"transaction executed at {tx['scanned_at']}"
+            "msg": f"transaction already executed at {tx['scanned_at']}"
+        }
+        return reply
+
+    required_amount = 1000
+    if tx['amount'] < required_amount:
+        reply = {
+            "tx_hash": tx_hash,
+            "success": False,
+            "msg": f"amount {tx['amount']} is not enough, required {required_amount}"
         }
         return reply
 
     # verify_signature
     logging.debug(f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
     valid = verify_signature(tx['sender'], tx_signature, tx_hash)
+
+    
 
     if not valid:
         # transaction is not valids
