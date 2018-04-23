@@ -1,13 +1,16 @@
-FROM python:3-alpine
+FROM python:3-slim-stretch
 
-RUN apk update && \
-  apk add --virtual build-deps gcc python-dev musl-dev && \
-  apk add postgresql-dev
+# RUN apt-get update && \
+#   apt-get install build-deps gcc python-dev musl-dev && \
+#   apk add postgresql-dev
 
-ADD requirements.txt /requirements.txt
-RUN pip install -r /requirements.txt
+RUN apt-get update && apt-get install -y \
+netbase \
+build-essential
 
-ADD . /app
-WORKDIR /app
+COPY . /data/
 
-ENTRYPOINT [ "./beer-aepp-pos.py", "start" ]
+RUN pip install -r /data/requirements.txt
+
+ENTRYPOINT [ "python", "/data/pos.py"]
+CMD [ "start", "-c", "data/conf/settings.json"]
