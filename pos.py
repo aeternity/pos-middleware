@@ -261,7 +261,7 @@ def handle_refund(access_key, wallet_address, amount):
         reply = {"success": True, "tx_hash": tx_hash, "msg": str(resp)}
     except Exception as e:
         reply['msg'] = str(e)
-    send(reply)
+    send(reply, json=True)
 
 
 @socketio.on('set_bar_state')
@@ -310,7 +310,7 @@ def handle_get_name(public_key):
         send({'name': '404'}, json=True)
 
 
-@app.route('/name/<public_key>')
+@app.route('/rest/name/<public_key>')
 def rest_get_name(public_key):
     """reverse mapping for the account name"""
     row = database.select(
