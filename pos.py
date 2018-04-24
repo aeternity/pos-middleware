@@ -390,6 +390,14 @@ def handle_get_name(public_key):
         return {'name': None}
 
 
+@app.after_request
+def after_request(response):
+    """enable CORS"""
+    header = response.headers
+    header['Access-Control-Allow-Origin'] = '*'
+    return response
+
+
 @app.route('/rest/name/<public_key>')
 def rest_get_name(public_key):
     """reverse mapping for the account name"""
