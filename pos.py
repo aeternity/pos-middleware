@@ -54,6 +54,13 @@ epoch_node = os.getenv('EPOCH_NODE')
 bar_wallet_private = os.getenv('WALLET_PRIV')
 bar_wallet_address = os.getenv('WALLET_PUB')
 
+BEER_PRICE = 1000
+
+
+def fdate(dt):
+    """format a date"""
+    return dt.strftime('%d/%m/%Y – %H:%M:%S')
+
 
 def authorize(request_key):
     """validate a request key"""
@@ -182,8 +189,7 @@ def verify_signature(sender, signature_b64, message):
         vk = VerifyingKey.from_string(
             sender_pub[1:], curve=SECP256k1, hashfunc=sha256)
 
-        verified = vk.verify(signature, bytearray(
-            message, 'utf-8'), sigdecode=ecdsa.util.sigdecode_der)
+        verified = vk.verify(signature, bytearray(message, 'utf-8'), sigdecode=ecdsa.util.sigdecode_der)
     except Exception:
         verified = False
 
@@ -226,7 +232,7 @@ def handle_scan(access_key, tx_hash, tx_signature):
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"transaction doesn't exists"
+            "msg": f"Transaction doesn't exists"
         }
         return reply
 
@@ -235,24 +241,20 @@ def handle_scan(access_key, tx_hash, tx_signature):
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"transaction already executed at {tx['scanned_at']}"
+            "msg": f"Transaction already executed at {fdate(tx['scanned_at'])}"
         }
         return reply
 
-    required_amount = 1000
-    if tx['amount'] < required_amount:
+    if tx['amount'] < BEER_PRICE:
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": "amount {} is not enough, required {}".format(
-                tx['amount'], required_amount
-            )
+            "msg": f"Amount {tx['amount']} not enough, required {BEER_PRICE}"
         }
         return reply
 
     # verify_signature
-    logging.debug(
-        f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
+    logging.debug(f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
     valid = verify_signature(tx['sender'], tx_signature, tx_hash)
 
     if not valid:
@@ -260,7 +262,7 @@ def handle_scan(access_key, tx_hash, tx_signature):
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"transaction signature mismatch"
+            "msg": f"Transaction signature mismatch"
         }
         return reply
 
@@ -268,17 +270,15 @@ def handle_scan(access_key, tx_hash, tx_signature):
     # update the record
     now = datetime.datetime.now()
     database.execute(
-        '''update transactions
-        set tx_signature=%s,
-        scanned_at = %s
-        where tx_hash = %s''',
+        'update transactions set tx_signature=%s, scanned_at = %s where tx_hash = %s',
         (tx_signature, now, tx_hash)
     )
     # reply
+    beer_count = "{:.0f}".format(tx['amount'] / BEER_PRICE)
     reply = {
         "tx_hash": tx_hash,
         "success": True,
-        "msg": f"transaction executed at {str(now)}"
+        "msg": f"Success! Serve {beer_count} beer(s) [amount {tx['amount']}]"
     }
     return reply
 
@@ -314,7 +314,7 @@ def handle_refund(access_key, wallet_address, amount):
     reply = {"success": False, "tx_hash": None, "msg": None}
     # check the authorization
     if not authorize(access_key):
-        msg = f"unauthorized access for key '{access_key}'"
+        msg = f"Unauthorized access for key '{access_key}'"
         logging.error(f"refund: {msg}")
         reply['msg'] = msg
         return reply
@@ -325,10 +325,20 @@ def handle_refund(access_key, wallet_address, amount):
             "from '{}', to '{}', amount '{}'".format(
                 bar_wallet.get_address(), wallet_address, amount)
         )
-        resp, tx_hash = epoch.spend(keypair=bar_wallet,
-                                    recipient_pubkey=wallet_address,
-                                    amount=int(amount))
-        reply = {"success": True, "tx_hash": tx_hash, "msg": str(resp)}
+        _, tx_hash = epoch.spend(keypair=bar_wallet,
+                                 recipient_pubkey=wallet_address,
+                                 amount=int(amount))
+
+        wallet_name = wallet_address
+        row = database.select("select wallet_name from names where public_key = %s", (wallet_address,))
+        if row is not None:
+            wallet_name = row['wallet_name']
+
+        reply = {
+            "success": True,
+            "tx_hash": tx_hash,
+            "msg": f"Success! Refunded {amount} aet to {wallet_name}"
+        }
     except Exception as e:
         reply['msg'] = str(e)
     return reply
@@ -337,25 +347,22 @@ def handle_refund(access_key, wallet_address, amount):
 @socketio.on('set_bar_state')
 def handle_set_bar_state(access_key, state):
 
+    reply = {"success": False, "msg": None}
     # check the authorization
     if not authorize(access_key):
-        logging.error(
-            "refund: unauthorized access using key {}, state {}".format(
-                access_key, state)
-        )
-        return
+        reply['msg'] = f"Unauthorized access using key {access_key}, state {state}"
+        logging.error(reply['msg'])
+        return reply
     # run the update
-    reply = {"success": True, "msg": None}
     valid_states = ['open', 'closed', 'out_of_beers']
     if state in valid_states:
-        database.execute(
-            "update state set state = %s, updated_at = NOW()", (state,))
+        database.execute("update state set state = %s, updated_at = NOW()", (state,))
         # BROADCAST new status
-        emit('bar_state', {"state": state}, broadcast=True, josn=True)
+        emit('bar_state', {"state": state}, broadcast=True)
         logging.info(f"set_bar_state: new state {state}")
+        reply = {"success": True, "msg": state}
     else:
-        msg = "set_bar_state: invalid invalid state {}, allowd {}".format(
-            state, ','.join(valid_states))
+        msg = f"Invalid invalid state {state}, allowed {','.join(valid_states)}"
         logging.error(msg)
         reply = {
             "success": False,
