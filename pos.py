@@ -1,4 +1,4 @@
-#! /usr/bin/env python3
+#!/usr/bin/env python3
 
 import os
 import sys
@@ -13,19 +13,16 @@ from queue import Queue
 import time
 
 # flask
-from flask import Flask, render_template, g, jsonify, abort
-from flask_socketio import SocketIO, send, emit
-
+from flask import Flask, jsonify, abort
+from flask_socketio import SocketIO, emit
 
 # aeternity
 from aeternity import Config
 from aeternity.signing import KeyPair
 from aeternity.epoch import EpochClient
-from aeternity.aens import AEName
-from aeternity.exceptions import AException
 
 # key signing
-from ecdsa import SECP256k1, SigningKey, VerifyingKey
+from ecdsa import SECP256k1, VerifyingKey
 import ecdsa
 import base58
 import base64
@@ -56,9 +53,6 @@ access_key = os.getenv('POS_ACCESS_KEY')
 epoch_node = os.getenv('EPOCH_NODE')
 bar_wallet_private = os.getenv('WALLET_PRIV')
 bar_wallet_address = os.getenv('WALLET_PUB')
-
-from flask import Flask
-from flask_socketio import SocketIO
 
 
 def authorize(request_key):
@@ -105,7 +99,8 @@ def reload_settings():
 
 class PG(object):
     def __init__(self, host, user, password, database):
-        connect_str = f"dbname='{database}' user='{user}' host='{host}' password='{password}'"
+        connect_str = "dbname='{}' user='{}' host='{}' password='{}'".format(
+            database, user, host, password)
         self.conn = psycopg2.connect(connect_str)
 
     def execute(self, query, params=()):
@@ -177,26 +172,28 @@ def verify_signature(sender, signature_b64, message):
     """
     verified = False
     try:
-      
-      signature = base64.b64decode(signature_b64)
 
-      sender_pub = base58.b58decode_check(sender[3:])
-      logging.debug(
-          f"sign  sender: {sender_pub} signature {signature} tx: {message}")
+        signature = base64.b64decode(signature_b64)
 
-      vk = VerifyingKey.from_string(
-          sender_pub[1:], curve=SECP256k1, hashfunc=sha256)
+        sender_pub = base58.b58decode_check(sender[3:])
+        logging.debug(
+            f"sign  sender: {sender_pub} signature {signature} tx: {message}")
 
-      verified = vk.verify(signature, bytearray(
-          message , 'utf-8'), sigdecode=ecdsa.util.sigdecode_der)
-    except:
-      verified = False
-    
+        vk = VerifyingKey.from_string(
+            sender_pub[1:], curve=SECP256k1, hashfunc=sha256)
+
+        verified = vk.verify(signature, bytearray(
+            message, 'utf-8'), sigdecode=ecdsa.util.sigdecode_der)
+    except Exception:
+        verified = False
+
     logging.debug(
-        f"sign  sender: '{sender}' signature '{signature_b64}' tx: {message}, verified {verified}")
+        "sign  sender: '{}' signature '{}' tx: {}, verified {}".format(
+            sender, signature_b64, message, verified
+        )
+    )
     return verified
-      
-    
+
 
 def get_tx(tx_hash):
     pass
@@ -225,15 +222,13 @@ def handle_scan(access_key, tx_hash, tx_signature):
         # transaction not recorded // search the chain for it
         # etx = epoch.get_transaction_by_transaction_hash(tx_hash)
         # if tx is not null (or no exception) then is ok
-        #if etx is None:
+        # if etx is None:
         reply = {
             "tx_hash": tx_hash,
             "success": False,
             "msg": f"transaction doesn't exists"
         }
         return reply
-        
-
 
     # tx has been already validated
     if tx['scanned_at'] is not None:
@@ -249,15 +244,16 @@ def handle_scan(access_key, tx_hash, tx_signature):
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"amount {tx['amount']} is not enough, required {required_amount}"
+            "msg": "amount {} is not enough, required {}".format(
+                tx['amount'], required_amount
+            )
         }
         return reply
 
     # verify_signature
-    logging.debug(f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
+    logging.debug(
+        f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
     valid = verify_signature(tx['sender'], tx_signature, tx_hash)
-
-    
 
     if not valid:
         # transaction is not valids
@@ -272,7 +268,10 @@ def handle_scan(access_key, tx_hash, tx_signature):
     # update the record
     now = datetime.datetime.now()
     database.execute(
-        'update transactions set tx_signature=%s, scanned_at = %s where tx_hash = %s',
+        '''update transactions
+        set tx_signature=%s,
+        scanned_at = %s
+        where tx_hash = %s''',
         (tx_signature, now, tx_hash)
     )
     # reply
@@ -287,7 +286,8 @@ def handle_scan(access_key, tx_hash, tx_signature):
 @socketio.on('was_beer_scanned')
 def handle_was_beer_scanned(tx_hash):
     """check if the trasaction was scanned"""
-    tx = database.select("select * from transactions where tx_hash = %s", (tx_hash,))
+    tx = database.select(
+        "select * from transactions where tx_hash = %s", (tx_hash,))
 
     reply = {"scanned": False, "scanned_at": None}
 
@@ -299,7 +299,7 @@ def handle_was_beer_scanned(tx_hash):
             "scanned": True,
             "scanned_at": str(tx['scanned_at'])
         }
-        
+
     return reply
 
 
@@ -311,17 +311,20 @@ def handle_refund(access_key, wallet_address, amount):
     :param wallet_address: the account to refound
     :param amount: the amount to move
     """
+    reply = {"success": False, "tx_hash": None, "msg": None}
     # check the authorization
     if not authorize(access_key):
-        logging.error(
-            f"refund: unauthorized access using key '{access_key}', wallet '{wallet_address}', amount: '{amount}'")
-        return
+        msg = f"unauthorized access for key '{access_key}'"
+        logging.error(f"refund: {msg}")
+        reply['msg'] = msg
+        return reply
     # run the refund
-
-    reply = {"success": False, "tx_hash": None, "msg": None}
     try:
+
         logging.debug(
-            f"from '{bar_wallet.get_address()}', to '{wallet_address}', amount '{amount}'")
+            "from '{}', to '{}', amount '{}'".format(
+                bar_wallet.get_address(), wallet_address, amount)
+        )
         resp, tx_hash = epoch.spend(keypair=bar_wallet,
                                     recipient_pubkey=wallet_address,
                                     amount=int(amount))
@@ -337,7 +340,9 @@ def handle_set_bar_state(access_key, state):
     # check the authorization
     if not authorize(access_key):
         logging.error(
-            f"refund: unauthorized access using key {access_key}, state {state}")
+            "refund: unauthorized access using key {}, state {}".format(
+                access_key, state)
+        )
         return
     # run the update
     reply = {"success": True, "msg": None}
@@ -349,11 +354,12 @@ def handle_set_bar_state(access_key, state):
         emit('bar_state', {"state": state}, broadcast=True, josn=True)
         logging.info(f"set_bar_state: new state {state}")
     else:
-        logging.error(
-            f"set_bar_state: invalid invalid state {state}, allowd {','.join(valid_states)}")
+        msg = "set_bar_state: invalid invalid state {}, allowd {}".format(
+            state, ','.join(valid_states))
+        logging.error(msg)
         reply = {
             "success": False,
-            "msg": f"invalid state {state}, only {','.join(valid_states)} are allowed"
+            "msg": msg
         }
     # reply to the sender
     return reply
@@ -380,8 +386,7 @@ def handle_get_name(public_key):
 @app.route('/rest/name/<public_key>')
 def rest_get_name(public_key):
     """reverse mapping for the account name"""
-    row = database.select(
-        'select wallet_name from names where public_key = %s', (public_key,))
+    row = database.select('select wallet_name from names where public_key = %s', (public_key,))
     if row is not None:
         reply = {"name": row['wallet_name']}
         return jsonify(reply)
@@ -415,7 +420,7 @@ class CashRegisterPoller(object):
         :type bar_wallet: KeyPair
         :param bar_wallet: contains the bar wallet
         :type orders_queue: Queue
-        :param orders_queue: where to send the orders when they appear on the chain
+        :param orders_queue: orders chain queue
         :type interval: int
         :param interval: Check interval, in seconds
         """
@@ -457,13 +462,14 @@ class CashRegisterPoller(object):
                     local_h, next_h, tx_types=['spend_tx'])
 
                 for tx in txs:
-                    logging.info("block {:10} vsn:{:2} amount:{:4} from {} to {}".format(
+                    msg = "b:{:10} vsn:{:2} amount:{:4} from {} to {}".format(
                         tx.block_height,
                         tx.tx.vsn,
                         tx.tx.amount,
                         tx.tx.recipient,
                         tx.tx.sender
-                    ))
+                    )
+                    logging.info(msg)
                     if tx.tx.recipient == self.bar_wallet.get_address():
                         logging.info("FOUND BAR TRANSACTION !!!!")
                         now = datetime.datetime.now()
@@ -476,10 +482,12 @@ class CashRegisterPoller(object):
                         )
                         # insert block
                         self.db.execute(
-                            'insert into blocks(height) values (%s) ON CONFLICT(height) DO NOTHING', (tx.block_height,))
+                            'insert into blocks(height) values (%s) on conflict(height) do nothing',
+                            (tx.block_height,))
                         # record transaction
                         self.db.execute(
-                            'insert into transactions(tx_hash, sender, amount, block_id, found_at) values (%s,%s,%s,%s,%s) on conflict(tx_hash) do nothing', pos_tx)
+                            'insert into transactions (tx_hash, sender, amount, block_id, found_at) values (%s,%s,%s,%s,%s) on conflict(tx_hash) do nothing',
+                            pos_tx)
                         # push it into the orders queue to notify the frontend
                         self.orders_queue.put({
                             'tx': pos_tx[0],
@@ -533,7 +541,8 @@ def cmd_start(args=None):
     if not args.no_poll:
         pg1 = PG(pg_host, pg_user, pg_pass, pg_db)
         crp = CashRegisterPoller(
-            pg1, epoch, bar_wallet, orders_queue, interval=args.polling_interval)
+            pg1, epoch, bar_wallet, orders_queue,
+            interval=args.polling_interval)
         crp.start()
     # flask context
     # with app.app_context():
@@ -551,7 +560,6 @@ def cmd_start(args=None):
     print('start socket.io')
     socketio.init_app(app)
     socketio.run(app, host="0.0.0.0")
-
 
 
 if __name__ == '__main__':
@@ -575,7 +583,7 @@ if __name__ == '__main__':
                     'names': ['-p', '--polling-interval'],
                     'help':'polling interval in seconds',
                     'default': 15
-                } 
+                }
             ]
         }
     ]
