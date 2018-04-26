@@ -488,7 +488,7 @@ class CashRegisterPoller(object):
                         logging.info(msg)
                         if tx.tx.recipient == self.bar_wallet.get_address():
                             now = datetime.datetime.now()
-                            logging.info("FOUND BAR TRANSACTION !!!!")
+                            logging.info(f"FOUND BAR TRANSACTION {tx.hash}")
                             pos_tx = (
                                 tx.hash,
                                 tx.tx.sender,
