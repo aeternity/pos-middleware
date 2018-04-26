@@ -422,7 +422,7 @@ database = None
 
 
 class CashRegisterPoller(object):
-    """ 
+    """
     Poll the bar account to look for transactions
     """
 
@@ -458,64 +458,68 @@ class CashRegisterPoller(object):
             # sleep at the beginning
             time.sleep(interval)
             interval = self.interval
-            # Do something
-            logging.info('polling chain...')
-            row = self.db.select("select max(height) as h from blocks")
-            local_h = row['h']
-            chain_h = self.epoch.get_height()
 
-            logging.info(f"local height {local_h}, chain height {chain_h}")
+            try:
+                logging.info('polling chain...')
+                row = self.db.select("select block_id from pos_height")
+                local_h = row['block_id']
+                chain_h = self.epoch.get_height()
 
-            if local_h == chain_h:
-                continue
+                logging.info(f"local height {local_h}, chain height {chain_h}")
 
-            while local_h < chain_h:
-                block_step = min(10, chain_h - local_h)
-                next_h = local_h + block_step
-                logging.info(f"query tx in block range {local_h}-{next_h}")
-                txs = self.epoch.get_transactions_in_block_range(
-                    local_h, next_h, tx_types=['spend_tx'])
+                if local_h == chain_h:
+                    continue
 
-                for tx in txs:
-                    msg = "b:{:10} vsn:{:2} amount:{:4} from {} to {}".format(
-                        tx.block_height,
-                        tx.tx.vsn,
-                        tx.tx.amount,
-                        tx.tx.recipient,
-                        tx.tx.sender
-                    )
-                    logging.info(msg)
-                    if tx.tx.recipient == self.bar_wallet.get_address():
-                        logging.info("FOUND BAR TRANSACTION !!!!")
-                        now = datetime.datetime.now()
-                        pos_tx = (
-                            tx.hash,
-                            tx.tx.sender,
-                            tx.tx.amount,
+                while local_h < chain_h:
+                    block_step = min(10, chain_h - local_h)
+                    next_h = local_h + block_step
+                    logging.info(f"query tx in block range {local_h}-{next_h}")
+                    txs = self.epoch.get_transactions_in_block_range(
+                        local_h, next_h, tx_types=['spend_tx'])
+
+                    for tx in txs:
+                        msg = "b:{:10} vsn:{:2} amount:{:4} from {} to {}".format(
                             tx.block_height,
-                            now
+                            tx.tx.vsn,
+                            tx.tx.amount,
+                            tx.tx.recipient,
+                            tx.tx.sender
                         )
-                        # insert block
-                        self.db.execute(
-                            'insert into blocks(height) values (%s) on conflict(height) do nothing',
-                            (tx.block_height,))
-                        # record transaction
-                        self.db.execute(
-                            'insert into transactions (tx_hash, sender, amount, block_id, found_at) values (%s,%s,%s,%s,%s) on conflict(tx_hash) do nothing',
-                            pos_tx)
-                        # push it into the orders queue to notify the frontend
-                        self.orders_queue.put({
-                            'tx': pos_tx[0],
-                            'sender': pos_tx[1],
-                            'amount': pos_tx[2],
-                            'block_h':  pos_tx[3],
-                            'time':  pos_tx[4],
-                        })
+                        logging.info(msg)
+                        if tx.tx.recipient == self.bar_wallet.get_address():
+                            now = datetime.datetime.now()
+                            logging.info(f"FOUND BAR TRANSACTION {tx.hash}")
+                            pos_tx = (
+                                tx.hash,
+                                tx.tx.sender,
+                                tx.tx.amount,
+                                tx.block_height,
+                                now
+                            )
+                            # insert block
+                            self.db.execute(
+                                'insert into blocks(height) values (%s) on conflict(height) do nothing',
+                                (tx.block_height,))
+                            # record transaction
+                            self.db.execute(
+                                '''insert into transactions (tx_hash, sender, amount, block_id, found_at)
+                                values (%s,%s,%s,%s,%s) on conflict(tx_hash) do nothing''',
+                                pos_tx)
+                            # push it into the orders queue to notify the frontend
+                            self.orders_queue.put({
+                                'tx': pos_tx[0],
+                                'sender': pos_tx[1],
+                                'amount': pos_tx[2],
+                                'block_h':  pos_tx[3],
+                                'time':  pos_tx[4],
+                            })
 
-                local_h = next_h
-                # insert block
-                self.db.execute(
-                    'insert into blocks(height) values (%s) on conflict(height) do nothing', (local_h,))
+                    local_h = next_h
+                    # update the last polled block
+                    self.db.execute('update pos_height set block_id = %s', (local_h,))
+
+            except Exception as e:
+                logging.error("error polling the chain {}".format(e))
 
 
 #     ______  ____    ____  ______     ______
@@ -554,24 +558,13 @@ def cmd_start(args=None):
 
     # backfround worker
     if not args.no_poll:
-        pg1 = PG(pg_host, pg_user, pg_pass, pg_db)
+        pg = PG(pg_host, pg_user, pg_pass, pg_db)
         crp = CashRegisterPoller(
-            pg1, epoch, bar_wallet, orders_queue,
+            pg, epoch, bar_wallet, orders_queue,
             interval=args.polling_interval)
         crp.start()
-    # flask context
-    # with app.app_context():
-        # within this block, current_app points to app.
-
-        # # emit an order to the client
-        # def order_notify():
-        #     order = orders_queue.get()
-        #     logging.info("notifing frontend of new order")
-        #     emit("order_received", access_key, order)
-        # # start the queue montior
-        # thread = threading.Thread(target=order_notify, args=())
-        # thread.daemon = True #                Daemonize thread
-        # thread.start()
+    
+    # start the app
     print('start socket.io')
     socketio.init_app(app)
     socketio.run(app, host="0.0.0.0")
