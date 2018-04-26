@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS blocks (
 INSERT INTO blocks(height) VALUES(0) ON CONFLICT(height) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS transactions (
-  tx_hash char(60) PRIMARY KEY, 
+  tx_hash varchar(100) PRIMARY KEY, 
   tx_signature varchar(200),
   sender varchar(150),
   amount integer,
