@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# version 0.2.0 
 
 import os
 import sys
