@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   block_id integer REFERENCES blocks
 );
 
+
 CREATE TABLE IF NOT EXISTS state (
   id bool PRIMARY KEY DEFAULT TRUE,
   state varchar(100) DEFAULT 'open',
@@ -23,6 +24,11 @@ CREATE TABLE IF NOT EXISTS state (
 );
 
 INSERT INTO state(id) VALUES (true);
+
+CREATE TABLE IF NOT EXISTS pos_height (
+  block_id integer PRIMARY KEY
+);
+INSERT INTO pos_height(block_id) VALUES (0);
 
 
 CREATE TABLE IF NOT EXISTS names (
