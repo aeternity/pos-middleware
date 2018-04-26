@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS blocks (
 INSERT INTO blocks(height) VALUES(0) ON CONFLICT(height) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS transactions (
-  tx_hash char(60) PRIMARY KEY, 
+  tx_hash varchar(100) PRIMARY KEY, 
   tx_signature varchar(200),
   sender varchar(150),
   amount integer,
@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   block_id integer REFERENCES blocks
 );
 
+
 CREATE TABLE IF NOT EXISTS state (
   id bool PRIMARY KEY DEFAULT TRUE,
   state varchar(100) DEFAULT 'open',
@@ -23,6 +24,11 @@ CREATE TABLE IF NOT EXISTS state (
 );
 
 INSERT INTO state(id) VALUES (true);
+
+CREATE TABLE IF NOT EXISTS pos_height (
+  block_id integer PRIMARY KEY
+);
+INSERT INTO pos_height(block_id) VALUES (0);
 
 
 CREATE TABLE IF NOT EXISTS names (

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# version 0.2.0 
 
 import os
 import sys
@@ -53,6 +54,13 @@ access_key = os.getenv('POS_ACCESS_KEY')
 epoch_node = os.getenv('EPOCH_NODE')
 bar_wallet_private = os.getenv('WALLET_PRIV')
 bar_wallet_address = os.getenv('WALLET_PUB')
+
+BEER_PRICE = 1000
+
+
+def fdate(dt):
+    """format a date"""
+    return dt.strftime('%d/%m/%Y – %H:%M:%S')
 
 
 def authorize(request_key):
@@ -182,8 +190,7 @@ def verify_signature(sender, signature_b64, message):
         vk = VerifyingKey.from_string(
             sender_pub[1:], curve=SECP256k1, hashfunc=sha256)
 
-        verified = vk.verify(signature, bytearray(
-            message, 'utf-8'), sigdecode=ecdsa.util.sigdecode_der)
+        verified = vk.verify(signature, bytearray(message, 'utf-8'), sigdecode=ecdsa.util.sigdecode_der)
     except Exception:
         verified = False
 
@@ -226,7 +233,7 @@ def handle_scan(access_key, tx_hash, tx_signature):
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"transaction doesn't exists"
+            "msg": f"Transaction doesn't exists"
         }
         return reply
 
@@ -235,24 +242,20 @@ def handle_scan(access_key, tx_hash, tx_signature):
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"transaction already executed at {tx['scanned_at']}"
+            "msg": f"Transaction already executed at {fdate(tx['scanned_at'])}"
         }
         return reply
 
-    required_amount = 1000
-    if tx['amount'] < required_amount:
+    if tx['amount'] < BEER_PRICE:
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": "amount {} is not enough, required {}".format(
-                tx['amount'], required_amount
-            )
+            "msg": f"Amount {tx['amount']} not enough, required {BEER_PRICE}"
         }
         return reply
 
     # verify_signature
-    logging.debug(
-        f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
+    logging.debug(f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
     valid = verify_signature(tx['sender'], tx_signature, tx_hash)
 
     if not valid:
@@ -260,7 +263,7 @@ def handle_scan(access_key, tx_hash, tx_signature):
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"transaction signature mismatch"
+            "msg": f"Transaction signature mismatch"
         }
         return reply
 
@@ -268,17 +271,15 @@ def handle_scan(access_key, tx_hash, tx_signature):
     # update the record
     now = datetime.datetime.now()
     database.execute(
-        '''update transactions
-        set tx_signature=%s,
-        scanned_at = %s
-        where tx_hash = %s''',
+        'update transactions set tx_signature=%s, scanned_at = %s where tx_hash = %s',
         (tx_signature, now, tx_hash)
     )
     # reply
+    beer_count = "{:.0f}".format(tx['amount'] / BEER_PRICE)
     reply = {
         "tx_hash": tx_hash,
         "success": True,
-        "msg": f"transaction executed at {str(now)}"
+        "msg": f"Success! Serve {beer_count} beer(s) [amount {tx['amount']}]"
     }
     return reply
 
@@ -314,7 +315,7 @@ def handle_refund(access_key, wallet_address, amount):
     reply = {"success": False, "tx_hash": None, "msg": None}
     # check the authorization
     if not authorize(access_key):
-        msg = f"unauthorized access for key '{access_key}'"
+        msg = f"Unauthorized access for key '{access_key}'"
         logging.error(f"refund: {msg}")
         reply['msg'] = msg
         return reply
@@ -325,10 +326,20 @@ def handle_refund(access_key, wallet_address, amount):
             "from '{}', to '{}', amount '{}'".format(
                 bar_wallet.get_address(), wallet_address, amount)
         )
-        resp, tx_hash = epoch.spend(keypair=bar_wallet,
-                                    recipient_pubkey=wallet_address,
-                                    amount=int(amount))
-        reply = {"success": True, "tx_hash": tx_hash, "msg": str(resp)}
+        _, tx_hash = epoch.spend(keypair=bar_wallet,
+                                 recipient_pubkey=wallet_address,
+                                 amount=int(amount))
+
+        wallet_name = wallet_address
+        row = database.select("select wallet_name from names where public_key = %s", (wallet_address,))
+        if row is not None:
+            wallet_name = row['wallet_name']
+
+        reply = {
+            "success": True,
+            "tx_hash": tx_hash,
+            "msg": f"Success! Refunded {amount} aet to {wallet_name}"
+        }
     except Exception as e:
         reply['msg'] = str(e)
     return reply
@@ -337,25 +348,22 @@ def handle_refund(access_key, wallet_address, amount):
 @socketio.on('set_bar_state')
 def handle_set_bar_state(access_key, state):
 
+    reply = {"success": False, "msg": None}
     # check the authorization
     if not authorize(access_key):
-        logging.error(
-            "refund: unauthorized access using key {}, state {}".format(
-                access_key, state)
-        )
-        return
+        reply['msg'] = f"Unauthorized access using key {access_key}, state {state}"
+        logging.error(reply['msg'])
+        return reply
     # run the update
-    reply = {"success": True, "msg": None}
     valid_states = ['open', 'closed', 'out_of_beers']
     if state in valid_states:
-        database.execute(
-            "update state set state = %s, updated_at = NOW()", (state,))
+        database.execute("update state set state = %s, updated_at = NOW()", (state,))
         # BROADCAST new status
-        emit('bar_state', {"state": state}, broadcast=True, josn=True)
+        emit('bar_state', {"state": state}, broadcast=True)
         logging.info(f"set_bar_state: new state {state}")
+        reply = {"success": True, "msg": state}
     else:
-        msg = "set_bar_state: invalid invalid state {}, allowd {}".format(
-            state, ','.join(valid_states))
+        msg = f"Invalid invalid state {state}, allowed {','.join(valid_states)}"
         logging.error(msg)
         reply = {
             "success": False,
@@ -383,6 +391,14 @@ def handle_get_name(public_key):
         return {'name': None}
 
 
+@app.after_request
+def after_request(response):
+    """enable CORS"""
+    header = response.headers
+    header['Access-Control-Allow-Origin'] = '*'
+    return response
+
+
 @app.route('/rest/name/<public_key>')
 def rest_get_name(public_key):
     """reverse mapping for the account name"""
@@ -407,7 +423,7 @@ database = None
 
 
 class CashRegisterPoller(object):
-    """ 
+    """
     Poll the bar account to look for transactions
     """
 
@@ -443,64 +459,68 @@ class CashRegisterPoller(object):
             # sleep at the beginning
             time.sleep(interval)
             interval = self.interval
-            # Do something
-            logging.info('polling chain...')
-            row = self.db.select("select max(height) as h from blocks")
-            local_h = row['h']
-            chain_h = self.epoch.get_height()
 
-            logging.info(f"local height {local_h}, chain height {chain_h}")
+            try:
+                logging.info('polling chain...')
+                row = self.db.select("select block_id from pos_height")
+                local_h = row['block_id']
+                chain_h = self.epoch.get_height()
 
-            if local_h == chain_h:
-                continue
+                logging.info(f"local height {local_h}, chain height {chain_h}")
 
-            while local_h < chain_h:
-                block_step = min(10, chain_h - local_h)
-                next_h = local_h + block_step
-                logging.info(f"query tx in block range {local_h}-{next_h}")
-                txs = self.epoch.get_transactions_in_block_range(
-                    local_h, next_h, tx_types=['spend_tx'])
+                if local_h == chain_h:
+                    continue
 
-                for tx in txs:
-                    msg = "b:{:10} vsn:{:2} amount:{:4} from {} to {}".format(
-                        tx.block_height,
-                        tx.tx.vsn,
-                        tx.tx.amount,
-                        tx.tx.recipient,
-                        tx.tx.sender
-                    )
-                    logging.info(msg)
-                    if tx.tx.recipient == self.bar_wallet.get_address():
-                        logging.info("FOUND BAR TRANSACTION !!!!")
-                        now = datetime.datetime.now()
-                        pos_tx = (
-                            tx.hash,
-                            tx.tx.sender,
-                            tx.tx.amount,
+                while local_h < chain_h:
+                    block_step = min(10, chain_h - local_h)
+                    next_h = local_h + block_step
+                    logging.info(f"query tx in block range {local_h}-{next_h}")
+                    txs = self.epoch.get_transactions_in_block_range(
+                        local_h, next_h, tx_types=['spend_tx'])
+
+                    for tx in txs:
+                        msg = "b:{:10} vsn:{:2} amount:{:4} from {} to {}".format(
                             tx.block_height,
-                            now
+                            tx.tx.vsn,
+                            tx.tx.amount,
+                            tx.tx.recipient,
+                            tx.tx.sender
                         )
-                        # insert block
-                        self.db.execute(
-                            'insert into blocks(height) values (%s) on conflict(height) do nothing',
-                            (tx.block_height,))
-                        # record transaction
-                        self.db.execute(
-                            'insert into transactions (tx_hash, sender, amount, block_id, found_at) values (%s,%s,%s,%s,%s) on conflict(tx_hash) do nothing',
-                            pos_tx)
-                        # push it into the orders queue to notify the frontend
-                        self.orders_queue.put({
-                            'tx': pos_tx[0],
-                            'sender': pos_tx[1],
-                            'amount': pos_tx[2],
-                            'block_h':  pos_tx[3],
-                            'time':  pos_tx[4],
-                        })
+                        logging.info(msg)
+                        if tx.tx.recipient == self.bar_wallet.get_address():
+                            now = datetime.datetime.now()
+                            logging.info(f"FOUND BAR TRANSACTION {tx.hash}")
+                            pos_tx = (
+                                tx.hash,
+                                tx.tx.sender,
+                                tx.tx.amount,
+                                tx.block_height,
+                                now
+                            )
+                            # insert block
+                            self.db.execute(
+                                'insert into blocks(height) values (%s) on conflict(height) do nothing',
+                                (tx.block_height,))
+                            # record transaction
+                            self.db.execute(
+                                '''insert into transactions (tx_hash, sender, amount, block_id, found_at)
+                                values (%s,%s,%s,%s,%s) on conflict(tx_hash) do nothing''',
+                                pos_tx)
+                            # push it into the orders queue to notify the frontend
+                            self.orders_queue.put({
+                                'tx': pos_tx[0],
+                                'sender': pos_tx[1],
+                                'amount': pos_tx[2],
+                                'block_h':  pos_tx[3],
+                                'time':  pos_tx[4],
+                            })
 
-                local_h = next_h
-                # insert block
-                self.db.execute(
-                    'insert into blocks(height) values (%s) on conflict(height) do nothing', (local_h,))
+                    local_h = next_h
+                    # update the last polled block
+                    self.db.execute('update pos_height set block_id = %s', (local_h,))
+
+            except Exception as e:
+                logging.error("error polling the chain {}".format(e))
 
 
 #     ______  ____    ____  ______     ______
@@ -539,24 +559,13 @@ def cmd_start(args=None):
 
     # backfround worker
     if not args.no_poll:
-        pg1 = PG(pg_host, pg_user, pg_pass, pg_db)
+        pg = PG(pg_host, pg_user, pg_pass, pg_db)
         crp = CashRegisterPoller(
-            pg1, epoch, bar_wallet, orders_queue,
+            pg, epoch, bar_wallet, orders_queue,
             interval=args.polling_interval)
         crp.start()
-    # flask context
-    # with app.app_context():
-        # within this block, current_app points to app.
-
-        # # emit an order to the client
-        # def order_notify():
-        #     order = orders_queue.get()
-        #     logging.info("notifing frontend of new order")
-        #     emit("order_received", access_key, order)
-        # # start the queue montior
-        # thread = threading.Thread(target=order_notify, args=())
-        # thread.daemon = True #                Daemonize thread
-        # thread.start()
+    
+    # start the app
     print('start socket.io')
     socketio.init_app(app)
     socketio.run(app, host="0.0.0.0")
