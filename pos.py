@@ -7,6 +7,8 @@ import logging
 import json
 import psycopg2
 import psycopg2.extras
+from psycopg2.pool import ThreadedConnectionPool
+from contextlib import contextmanager
 import datetime
 import argparse
 import threading
@@ -107,24 +109,30 @@ def reload_settings():
 
 
 class PG(object):
-    def __init__(self, host, user, password, database):
+    def __init__(self, host, user, password, database, poolsize=10):
         connect_str = "dbname='{}' user='{}' host='{}' password='{}'".format(
             database, user, host, password)
-        self.conn = psycopg2.connect(connect_str)
+        self.pool = ThreadedConnectionPool(1, poolsize, dsn=connect_str)
+
+    @contextmanager
+    def getcursor(self):
+        con = self.pool.getconn()
+        try:
+            yield con.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        finally:
+            con.commit()
+            self.pool.putconn(con)
 
     def execute(self, query, params=()):
         """run a database update
         :param query: the query string
         :param params: the query parameteres
         """
-        c = self.conn.cursor()
-        try:
-            # Insert a row of data
-            c.execute(query, params)
-            # Save (commit) the changes
-            self.conn.commit()
-        finally:
-            c.close()
+        with self.getcursor() as c:
+            try:
+                c.execute(query, params)
+            except Exception as e:
+                logging.error(e)
 
     def select(self, query, params=(), many=False):
         """
@@ -132,16 +140,16 @@ class PG(object):
         :param query: the query string
         :param params: the query parameteres
         """
-        c = self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        try:
-            # Insert a row of data
-            c.execute(query, params)
-            if many:
-                return c.fetchall()
-            else:
-                return c.fetchone()
-        finally:
-            c.close()
+        with self.getcursor() as c:
+            try:
+                # Insert a row of data
+                c.execute(query, params)
+                if many:
+                    return c.fetchall()
+                else:
+                    return c.fetchone()
+            except Exception as e:
+                logging.error(e)
 
 
 #     ______  ____  ____       _       _____  ____  _____
@@ -214,6 +222,7 @@ def verify_signature(sender, signature_b64, message):
 socketio = SocketIO()
 app = Flask(__name__)
 root.addHandler(app.logger)
+
 
 @socketio.on('scan')
 def handle_scan(access_key, tx_hash, tx_signature):
