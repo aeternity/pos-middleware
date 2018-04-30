@@ -387,6 +387,22 @@ def handle_set_bar_state(access_key, state):
     return reply
 
 
+@socketio.on('reset_bar')
+def handle_reset_bar(access_key):
+    """reset the local height of the database to"""
+    reply = {"success": False, "msg": None}
+    # check the authorization
+    if not authorize(access_key):
+        reply['msg'] = f"Unauthorized access using key {access_key}"
+        logging.error(reply['msg'])
+        return reply
+    logging.info("RESET CHAINHEIGHT IN MIDDLEWARE DATABASE")
+    database.execute("update pos_height set block_id = %s", (0,))
+    # reply to the sender
+    reply = {"success": True, "msg": "chain reset"}
+    return reply
+
+
 @socketio.on('get_bar_state')
 def handle_get_bar_state():
     """reply to a bar state request"""
