@@ -202,18 +202,6 @@ def verify_signature(sender, signature_b64, message):
     )
     return verified
 
-
-def get_tx(tx_hash):
-    epoch, _ = get_aeternity()
-    try:
-      tx = epoch.get_transaction_by_transaction_hash(tx_hash)
-      
-      
-    except Exception:
-      return None
-
-
-
 #    ______     ___      ______  ___  ____   ________  _________  _    ___
 #  .' ____ \  .'   `.  .' ___  ||_  ||_  _| |_   __  ||  _   _  |(_) .'   `.
 #  | (___ \_|/  .-.  \/ .'   \_|  | |_/ /     | |_ \_||_/ | | \_|__ /  .-.  \
