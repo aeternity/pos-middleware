@@ -227,18 +227,14 @@ root.addHandler(app.logger)
 @socketio.on('scan')
 def handle_scan(access_key, tx_hash, tx_signature):
     # query the transactions
-    tx = database.select(
-        "select * from transactions where tx_hash = %s", (tx_hash,))
-
+    global cash_register
+    tx = cash_register.query_tx(tx_hash)
     if tx is None:
-        # transaction not recorded // search the chain for it
-        # etx = epoch.get_transaction_by_transaction_hash(tx_hash)
-        # if tx is not null (or no exception) then is ok
-        # if etx is None:
+        # transaction not found
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"Transaction doesn't exists"
+            "msg": f"Transaction {tx_hash} doesn't exists"
         }
         return reply
 
@@ -466,68 +462,93 @@ class CashRegisterPoller(object):
             # sleep at the beginning
             time.sleep(interval)
             interval = self.interval
+            self.poll()
 
-            try:
-                logging.info('polling chain...')
-                row = self.db.select("select block_id from pos_height")
-                local_h = row['block_id']
-                chain_h = self.epoch.get_height()
+    def query_tx(self, tx_hash):
+        """get a ttransaction from the database or None if it's not found"""
 
-                logging.info(f"local height {local_h}, chain height {chain_h}")
+        q, p = "select * from transactions where tx_hash = %s", (tx_hash,)
+        tx = self.db.select(q, p)
+        if tx is None:
+            self.poll_tx(tx_hash)
+        tx = self.db.select(q, p)
+        logging.debug(tx)
+        return tx
 
-                if local_h == chain_h:
-                    continue
+    def insert_tx(self, block_id, pos_tx, recipient):
+        """insert a transaction in the database if it match the bar account"""
+        if recipient == self.bar_wallet.get_address():
+            logging.info(f"FOUND BAR TRANSACTION {pos_tx[0]}")
+            # insert block
+            self.db.execute('insert into blocks(height) values (%s) on conflict(height) do nothing',
+                            (block_id,))
+            # record transaction
+            self.db.execute('''insert into transactions (tx_hash, sender, amount, block_id, found_at)
+                          values (%s,%s,%s,%s,%s) on conflict(tx_hash) do nothing''',
+                            pos_tx)
 
-                while local_h < chain_h:
-                    block_step = min(10, chain_h - local_h)
-                    next_h = local_h + block_step
-                    logging.info(f"query tx in block range {local_h}-{next_h}")
-                    txs = self.epoch.get_transactions_in_block_range(
-                        local_h, next_h, tx_types=['spend_tx'])
+    def poll_tx(self, tx_hash):
+        """poll a specific transaction"""
+        try:
+            tx = self.epoch.get_transaction_by_transaction_hash(tx_hash)
+            block_id = tx.block_height
+            recipient = tx.tx.recipient
+            pos_tx = (
+                tx.hash,
+                tx.tx.sender,
+                tx.tx.amount,
+                block_id,
+                datetime.datetime.now()
+            )
+            self.insert_tx(block_id, pos_tx, recipient)
+        except Exception as e:
+            logging.info(f"transaction {tx_hash} lookup error {e}")
+            raise e
 
-                    for tx in txs:
-                        msg = "b:{:10} vsn:{:2} amount:{:4} from {} to {}".format(
-                            tx.block_height,
-                            tx.tx.vsn,
-                            tx.tx.amount,
-                            tx.tx.sender,
-                            tx.tx.recipient
-                        )
-                        logging.info(msg)
-                        if tx.tx.recipient == self.bar_wallet.get_address():
-                            now = datetime.datetime.now()
-                            logging.info(f"FOUND BAR TRANSACTION {tx.hash}")
-                            pos_tx = (
-                                tx.hash,
-                                tx.tx.sender,
-                                tx.tx.amount,
-                                tx.block_height,
-                                now
-                            )
-                            # insert block
-                            self.db.execute(
-                                'insert into blocks(height) values (%s) on conflict(height) do nothing',
-                                (tx.block_height,))
-                            # record transaction
-                            self.db.execute(
-                                '''insert into transactions (tx_hash, sender, amount, block_id, found_at)
-                                values (%s,%s,%s,%s,%s) on conflict(tx_hash) do nothing''',
-                                pos_tx)
-                            # push it into the orders queue to notify the frontend
-                            self.orders_queue.put({
-                                'tx': pos_tx[0],
-                                'sender': pos_tx[1],
-                                'amount': pos_tx[2],
-                                'block_h':  pos_tx[3],
-                                'time':  pos_tx[4],
-                            })
+    def poll(self):
+        """do the polling"""
+        try:
+            logging.info('polling chain...')
+            row = self.db.select("select block_id from pos_height")
+            local_h = row['block_id']
+            chain_h = self.epoch.get_height()
 
-                    local_h = next_h
-                    # update the last polled block
-                    self.db.execute('update pos_height set block_id = %s', (local_h,))
+            logging.info(f"local height {local_h}, chain height {chain_h}")
 
-            except Exception as e:
-                logging.error("error polling the chain {}".format(e))
+            if local_h == chain_h:
+                return
+
+            while local_h < chain_h:
+                block_step = min(10, chain_h - local_h)
+                next_h = local_h + block_step
+                logging.info(f"query tx in block range {local_h}-{next_h}")
+                txs = self.epoch.get_transactions_in_block_range(
+                    local_h, next_h, tx_types=['spend_tx'])
+
+                for tx in txs:
+                    pos_tx = (
+                        tx.hash,
+                        tx.tx.sender,
+                        tx.tx.amount,
+                        tx.block_height,
+                        datetime.datetime.now()
+                    )
+                    self.insert_tx(tx.block_height, pos_tx,  tx.tx.recipient)
+                    # push it into the orders queue to notify the frontend
+                    # self.orders_queue.put({
+                    #     'tx': pos_tx[0],
+                    #     'sender': pos_tx[1],
+                    #     'amount': pos_tx[2],
+                    #     'block_h':  pos_tx[3],
+                    #     'time':  pos_tx[4],
+                    # })
+
+                local_h = next_h
+                # update the last polled block
+                self.db.execute('update pos_height set block_id = %s', (local_h,))
+
+        except Exception as e:
+            logging.error("error polling the chain {}".format(e))
 
 
 #     ______  ____    ____  ______     ______
@@ -563,14 +584,17 @@ def cmd_start(args=None):
     global epoch
     global bar_wallet
     epoch, bar_wallet = get_aeternity()
+    global cash_register
+    cash_register = CashRegisterPoller(
+        PG(pg_host, pg_user, pg_pass, pg_db),
+        epoch,
+        bar_wallet,
+        orders_queue,
+        interval=args.polling_interval)
 
     # backfround worker
     if not args.no_poll:
-        pg = PG(pg_host, pg_user, pg_pass, pg_db)
-        crp = CashRegisterPoller(
-            pg, epoch, bar_wallet, orders_queue,
-            interval=args.polling_interval)
-        crp.start()
+        cash_register.start()
 
     # start the app
     logging.info('start socket.io')
