@@ -228,60 +228,73 @@ root.addHandler(app.logger)
 def handle_scan(access_key, tx_hash, tx_signature):
     # query the transactions
     global cash_register
-    tx = cash_register.query_tx(tx_hash)
-    if tx is None:
-        # transaction not found
+    try:
+        tx = cash_register.query_tx(tx_hash)
+        if tx is None:
+            # transaction not found
+            reply = {
+                "tx_hash": tx_hash,
+                "success": False,
+                "msg": f"Transaction {tx_hash} doesn't exists"
+            }
+            return reply
+
+        # tx has been already validated
+        if tx['scanned_at'] is not None:
+            reply = {
+                "tx_hash": tx_hash,
+                "success": False,
+                "msg": f"Transaction already executed at {fdate(tx['scanned_at'])}"
+            }
+            return reply
+
+        if tx['amount'] < BEER_PRICE:
+            reply = {
+                "tx_hash": tx_hash,
+                "success": False,
+                "msg": f"Amount {tx['amount']} not enough, required {BEER_PRICE}"
+            }
+            return reply
+
+        # verify_signature
+        logging.debug(f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
+        valid = verify_signature(tx['sender'], tx_signature, tx_hash)
+
+        if not valid:
+            # transaction is not valids
+            reply = {
+                "tx_hash": tx_hash,
+                "success": False,
+                "msg": f"Transaction signature mismatch"
+            }
+            return reply
+
+        # transaction is good
+        # update the record
+        now = datetime.datetime.now()
+        database.execute(
+            'update transactions set tx_signature=%s, scanned_at = %s where tx_hash = %s',
+            (tx_signature, now, tx_hash)
+        )
+        # get the wallet name
+        wallet_name = tx['sender']
+        row = database.select("select wallet_name from names where public_key = %s", (tx['sender'],))
+        if row is not None:
+            wallet_name = row['wallet_name']
+        # reply
+        beer_count = "{:.0f}".format(tx['amount'] / BEER_PRICE)
+        reply = {
+            "tx_hash": tx_hash,
+            "success": True,
+            "msg": f"Success! Serve {beer_count} beer(s) to {wallet_name} [amount {tx['amount']}]"
+        }
+    except Exception as e:
+        logging.error(f"transaction scan {tx_hash} error {e}")
         reply = {
             "tx_hash": tx_hash,
             "success": False,
-            "msg": f"Transaction {tx_hash} doesn't exists"
+            "msg": f"Error!  ask for help!"
         }
-        return reply
-
-    # tx has been already validated
-    if tx['scanned_at'] is not None:
-        reply = {
-            "tx_hash": tx_hash,
-            "success": False,
-            "msg": f"Transaction already executed at {fdate(tx['scanned_at'])}"
-        }
-        return reply
-
-    if tx['amount'] < BEER_PRICE:
-        reply = {
-            "tx_hash": tx_hash,
-            "success": False,
-            "msg": f"Amount {tx['amount']} not enough, required {BEER_PRICE}"
-        }
-        return reply
-
-    # verify_signature
-    logging.debug(f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
-    valid = verify_signature(tx['sender'], tx_signature, tx_hash)
-
-    if not valid:
-        # transaction is not valids
-        reply = {
-            "tx_hash": tx_hash,
-            "success": False,
-            "msg": f"Transaction signature mismatch"
-        }
-        return reply
-
-    # transaction is good
-    # update the record
-    now = datetime.datetime.now()
-    database.execute(
-        'update transactions set tx_signature=%s, scanned_at = %s where tx_hash = %s',
-        (tx_signature, now, tx_hash)
-    )
-    # reply
-    beer_count = "{:.0f}".format(tx['amount'] / BEER_PRICE)
-    reply = {
-        "tx_hash": tx_hash,
-        "success": True,
-        "msg": f"Success! Serve {beer_count} beer(s) [amount {tx['amount']}]"
-    }
     return reply
 
 
@@ -371,6 +384,22 @@ def handle_set_bar_state(access_key, state):
             "msg": msg
         }
     # reply to the sender
+    return reply
+
+
+@socketio.on('reset_bar')
+def handle_reset_bar(access_key):
+    """reset the local height of the database to"""
+    reply = {"success": False, "msg": None}
+    # check the authorization
+    if not authorize(access_key):
+        reply['msg'] = f"Unauthorized access using key {access_key}"
+        logging.error(reply['msg'])
+        return reply
+    logging.info("RESET CHAINHEIGHT IN MIDDLEWARE DATABASE")
+    database.execute("update pos_height set block_id = %s", (0,))
+    # reply to the sender
+    reply = {"success": True, "msg": "chain reset"}
     return reply
 
 
