@@ -215,8 +215,6 @@ socketio = SocketIO()
 app = Flask(__name__)
 root.addHandler(app.logger)
 
-bar_state = None
-
 @socketio.on('scan')
 def handle_scan(access_key, tx_hash, tx_signature):
     # query the transactions
@@ -356,9 +354,6 @@ def handle_set_bar_state(access_key, state):
     valid_states = ['open', 'closed', 'out_of_beers']
     if state in valid_states:
         database.execute("update state set state = %s, updated_at = NOW()", (state,))
-        # reset the bar state status
-        global bar_state
-        bar_state = None
         # BROADCAST new status
         emit('bar_state', {"state": state}, broadcast=True)
         logging.info(f"set_bar_state: new state {state}")
@@ -377,11 +372,9 @@ def handle_set_bar_state(access_key, state):
 @socketio.on('get_bar_state')
 def handle_get_bar_state():
     """reply to a bar state request"""
-    global bar_state
-    if bar_state is None:
-        row = database.select('select state from state limit 1')
-        bar_state = row['state']
-        logging.info(f"retrieving bar state from database {bar_state}")
+    row = database.select('select state from state limit 1')
+    bar_state = row['state']
+    # logging.info(f"retrieving bar state from database {bar_state}")
     return {"state": bar_state}
 
 
