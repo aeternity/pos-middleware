@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# version 0.2.0 
+# version 0.2.1-DEV
 
 import os
 import sys
@@ -7,6 +7,8 @@ import logging
 import json
 import psycopg2
 import psycopg2.extras
+from psycopg2.pool import ThreadedConnectionPool
+from contextlib import contextmanager
 import datetime
 import argparse
 import threading
@@ -32,10 +34,10 @@ from hashlib import sha256
 
 # also log to stdout because docker
 root = logging.getLogger()
-root.setLevel(logging.DEBUG)
+root.setLevel(logging.INFO)
 
 ch = logging.StreamHandler(sys.stdout)
-ch.setLevel(logging.DEBUG)
+ch.setLevel(logging.INFO)
 formatter = logging.Formatter(
     '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -44,7 +46,8 @@ root.addHandler(ch)
 
 
 logging.getLogger("aeternity.epoch").setLevel(logging.WARNING)
-logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+# logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+# logging.getLogger("engineio").setLevel(logging.ERROR)
 
 
 # app secret
@@ -106,24 +109,30 @@ def reload_settings():
 
 
 class PG(object):
-    def __init__(self, host, user, password, database):
+    def __init__(self, host, user, password, database, poolsize=10):
         connect_str = "dbname='{}' user='{}' host='{}' password='{}'".format(
             database, user, host, password)
-        self.conn = psycopg2.connect(connect_str)
+        self.pool = ThreadedConnectionPool(1, poolsize, dsn=connect_str)
+
+    @contextmanager
+    def getcursor(self):
+        con = self.pool.getconn()
+        try:
+            yield con.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        finally:
+            con.commit()
+            self.pool.putconn(con)
 
     def execute(self, query, params=()):
         """run a database update
         :param query: the query string
         :param params: the query parameteres
         """
-        c = self.conn.cursor()
-        try:
-            # Insert a row of data
-            c.execute(query, params)
-            # Save (commit) the changes
-            self.conn.commit()
-        finally:
-            c.close()
+        with self.getcursor() as c:
+            try:
+                c.execute(query, params)
+            except Exception as e:
+                logging.error(e)
 
     def select(self, query, params=(), many=False):
         """
@@ -131,16 +140,16 @@ class PG(object):
         :param query: the query string
         :param params: the query parameteres
         """
-        c = self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        try:
-            # Insert a row of data
-            c.execute(query, params)
-            if many:
-                return c.fetchall()
-            else:
-                return c.fetchone()
-        finally:
-            c.close()
+        with self.getcursor() as c:
+            try:
+                # Insert a row of data
+                c.execute(query, params)
+                if many:
+                    return c.fetchall()
+                else:
+                    return c.fetchone()
+            except Exception as e:
+                logging.error(e)
 
 
 #     ______  ____  ____       _       _____  ____  _____
@@ -200,10 +209,6 @@ def verify_signature(sender, signature_b64, message):
         )
     )
     return verified
-
-
-def get_tx(tx_hash):
-    pass
 
 #    ______     ___      ______  ___  ____   ________  _________  _    ___
 #  .' ____ \  .'   `.  .' ___  ||_  ||_  _| |_   __  ||  _   _  |(_) .'   `.
@@ -377,7 +382,9 @@ def handle_set_bar_state(access_key, state):
 def handle_get_bar_state():
     """reply to a bar state request"""
     row = database.select('select state from state limit 1')
-    return {"state": row['state']}
+    bar_state = row['state']
+    # logging.info(f"retrieving bar state from database {bar_state}")
+    return {"state": bar_state}
 
 
 @socketio.on('get_name')
@@ -483,8 +490,8 @@ class CashRegisterPoller(object):
                             tx.block_height,
                             tx.tx.vsn,
                             tx.tx.amount,
-                            tx.tx.recipient,
-                            tx.tx.sender
+                            tx.tx.sender,
+                            tx.tx.recipient
                         )
                         logging.info(msg)
                         if tx.tx.recipient == self.bar_wallet.get_address():
@@ -564,11 +571,11 @@ def cmd_start(args=None):
             pg, epoch, bar_wallet, orders_queue,
             interval=args.polling_interval)
         crp.start()
-    
+
     # start the app
-    print('start socket.io')
+    logging.info('start socket.io')
     socketio.init_app(app)
-    socketio.run(app, host="0.0.0.0")
+    socketio.run(app, host="0.0.0.0", max_size=10000, debug=False)
 
 
 if __name__ == '__main__':
