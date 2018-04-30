@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# version 0.2.0 
+# version 0.2.1-DEV
 
 import os
 import sys
@@ -32,10 +32,10 @@ from hashlib import sha256
 
 # also log to stdout because docker
 root = logging.getLogger()
-root.setLevel(logging.DEBUG)
+root.setLevel(logging.INFO)
 
 ch = logging.StreamHandler(sys.stdout)
-ch.setLevel(logging.DEBUG)
+ch.setLevel(logging.INFO)
 formatter = logging.Formatter(
     '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -44,7 +44,8 @@ root.addHandler(ch)
 
 
 logging.getLogger("aeternity.epoch").setLevel(logging.WARNING)
-logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+# logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+# logging.getLogger("engineio").setLevel(logging.ERROR)
 
 
 # app secret
@@ -203,7 +204,15 @@ def verify_signature(sender, signature_b64, message):
 
 
 def get_tx(tx_hash):
-    pass
+    epoch, _ = get_aeternity()
+    try:
+      tx = epoch.get_transaction_by_transaction_hash(tx_hash)
+      
+      
+    except Exception:
+      return None
+
+
 
 #    ______     ___      ______  ___  ____   ________  _________  _    ___
 #  .' ____ \  .'   `.  .' ___  ||_  ||_  _| |_   __  ||  _   _  |(_) .'   `.
@@ -218,6 +227,7 @@ socketio = SocketIO()
 app = Flask(__name__)
 root.addHandler(app.logger)
 
+bar_state = None
 
 @socketio.on('scan')
 def handle_scan(access_key, tx_hash, tx_signature):
@@ -358,6 +368,9 @@ def handle_set_bar_state(access_key, state):
     valid_states = ['open', 'closed', 'out_of_beers']
     if state in valid_states:
         database.execute("update state set state = %s, updated_at = NOW()", (state,))
+        # reset the bar state status
+        global bar_state
+        bar_state = None
         # BROADCAST new status
         emit('bar_state', {"state": state}, broadcast=True)
         logging.info(f"set_bar_state: new state {state}")
@@ -376,8 +389,12 @@ def handle_set_bar_state(access_key, state):
 @socketio.on('get_bar_state')
 def handle_get_bar_state():
     """reply to a bar state request"""
-    row = database.select('select state from state limit 1')
-    return {"state": row['state']}
+    global bar_state
+    if bar_state is None:
+        row = database.select('select state from state limit 1')
+        bar_state = row['state']
+        logging.info(f"retrieving bar state from database {bar_state}")
+    return {"state": bar_state}
 
 
 @socketio.on('get_name')
@@ -483,8 +500,8 @@ class CashRegisterPoller(object):
                             tx.block_height,
                             tx.tx.vsn,
                             tx.tx.amount,
-                            tx.tx.recipient,
-                            tx.tx.sender
+                            tx.tx.sender,
+                            tx.tx.recipient
                         )
                         logging.info(msg)
                         if tx.tx.recipient == self.bar_wallet.get_address():
@@ -564,11 +581,11 @@ def cmd_start(args=None):
             pg, epoch, bar_wallet, orders_queue,
             interval=args.polling_interval)
         crp.start()
-    
+
     # start the app
-    print('start socket.io')
+    logging.info('start socket.io')
     socketio.init_app(app)
-    socketio.run(app, host="0.0.0.0")
+    socketio.run(app, host="0.0.0.0", max_size=10000, debug=False)
 
 
 if __name__ == '__main__':
