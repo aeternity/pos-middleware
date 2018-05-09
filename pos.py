@@ -67,10 +67,12 @@ def fdate(dt):
 
 
 def authorize(request_key):
-    """validate a request key"""
+    """validate a request key, raise an exception when authorization fails"""
     if request_key == access_key:
         return True
-    return False
+    err = UnauthorizedException(f"Unauthorized access for key '{access_key}'")
+    logging.error(err.message)
+    raise err
 
 
 def reload_settings():
@@ -99,6 +101,35 @@ def reload_settings():
     bar_wallet_address = os.getenv('WALLET_PUB')
 
 
+class ItemScanException(Exception):
+    """Raised when a scan fails
+    Attributes:
+        message -- what caused the error
+    """
+
+    def __init__(self, message):
+        self.message = message
+
+
+class UnauthorizedException(Exception):
+    """Raised when a request is unauthorized
+    Attributes:
+        message -- what caused the error
+    """
+
+    def __init__(self, message):
+        self.message = message
+
+
+class UnsupportedStateException(Exception):
+    """Raised when a state change is requested for a state that is not supported
+    Attributes:
+        message -- what caused the error
+    """
+
+    def __init__(self, state):
+        self.message = f"Unsupported state {state}"
+
 #   ______   ______
 #  |_   _ `.|_   _ \
 #    | | `. \ | |_) |
@@ -116,6 +147,7 @@ class PG(object):
 
     @contextmanager
     def getcursor(self):
+        """retrieve a cursor from the database"""
         con = self.pool.getconn()
         try:
             yield con.cursor(cursor_factory=psycopg2.extras.DictCursor)
@@ -139,6 +171,7 @@ class PG(object):
         run a database update
         :param query: the query string
         :param params: the query parameteres
+        :param many: if True returns a list of rows, otherwise just on row
         """
         with self.getcursor() as c:
             try:
@@ -162,7 +195,7 @@ class PG(object):
 
 
 def get_aeternity():
-    """get the epoch client and the genesis keypair from config"""
+    """get the epoch client and the master keypair from config"""
     # configure epoch client in case we need it
 
     epoch = EpochClient(configs=Config(
@@ -189,25 +222,14 @@ def verify_signature(sender, signature_b64, message):
     """
     verified = False
     try:
-
         signature = base64.b64decode(signature_b64)
-
         sender_pub = base58.b58decode_check(sender[3:])
-        logging.debug(
-            f"sign  sender: {sender_pub} signature {signature} tx: {message}")
-
-        vk = VerifyingKey.from_string(
-            sender_pub[1:], curve=SECP256k1, hashfunc=sha256)
-
+        logging.debug(f"sign  sender: {sender_pub} signature {signature} tx: {message}")
+        vk = VerifyingKey.from_string(sender_pub[1:], curve=SECP256k1, hashfunc=sha256)
         verified = vk.verify(signature, bytearray(message, 'utf-8'), sigdecode=ecdsa.util.sigdecode_der)
     except Exception:
         verified = False
-
-    logging.debug(
-        "sign  sender: '{}' signature '{}' tx: {}, verified {}".format(
-            sender, signature_b64, message, verified
-        )
-    )
+    logging.debug(f"sign  sender: '{sender}' signature '{signature_b64}' tx: {message}, verified {verified}")
     return verified
 
 #    ______     ___      ______  ___  ____   ________  _________  _    ___
@@ -224,6 +246,14 @@ app = Flask(__name__)
 root.addHandler(app.logger)
 
 
+def rpl(tx_hash, success, msg):
+    return {
+        "tx_hash": tx_hash,
+        "success": success,
+        "msg": msg
+    }
+
+
 @socketio.on('scan')
 def handle_scan(access_key, tx_hash, tx_signature):
     # query the transactions
@@ -232,42 +262,18 @@ def handle_scan(access_key, tx_hash, tx_signature):
         tx = cash_register.query_tx(tx_hash)
         if tx is None:
             # transaction not found
-            reply = {
-                "tx_hash": tx_hash,
-                "success": False,
-                "msg": f"Transaction {tx_hash} doesn't exists"
-            }
-            return reply
-
+            raise ItemScanException(f"Transaction {tx_hash} doesn't exists")
         # tx has been already validated
         if tx['scanned_at'] is not None:
-            reply = {
-                "tx_hash": tx_hash,
-                "success": False,
-                "msg": f"Transaction already executed at {fdate(tx['scanned_at'])}"
-            }
-            return reply
+            raise ItemScanException(f"Transaction already executed at {fdate(tx['scanned_at'])}")
 
         if tx['amount'] < BEER_PRICE:
-            reply = {
-                "tx_hash": tx_hash,
-                "success": False,
-                "msg": f"Amount {tx['amount']} not enough, required {BEER_PRICE}"
-            }
-            return reply
+            raise ItemScanException(f"Amount {tx['amount']} not enough, required {BEER_PRICE}")
 
         # verify_signature
-        logging.debug(f"sign  sender: {tx['sender']} signature {tx_signature} tx: {tx_hash}")
-        valid = verify_signature(tx['sender'], tx_signature, tx_hash)
-
-        if not valid:
+        if not verify_signature(tx['sender'], tx_signature, tx_hash):
             # transaction is not valids
-            reply = {
-                "tx_hash": tx_hash,
-                "success": False,
-                "msg": f"Transaction signature mismatch"
-            }
-            return reply
+            raise ItemScanException("Transaction signature mismatch")
 
         # transaction is good
         # update the record
@@ -283,38 +289,27 @@ def handle_scan(access_key, tx_hash, tx_signature):
             wallet_name = row['wallet_name']
         # reply
         beer_count = "{:.0f}".format(tx['amount'] / BEER_PRICE)
-        reply = {
-            "tx_hash": tx_hash,
-            "success": True,
-            "msg": f"Success! Serve {beer_count} beer(s) to {wallet_name} [amount {tx['amount']}]"
-        }
+        return rpl(tx_hash, True, f"Success! Serve {beer_count} beer(s) to {wallet_name} [amount {tx['amount']}]")
+    except ItemScanException as e:
+        logging.error(f"transaction scan {tx_hash} error {e}")
+        return rpl(tx_hash, False, e.message)
     except Exception as e:
         logging.error(f"transaction scan {tx_hash} error {e}")
-        reply = {
-            "tx_hash": tx_hash,
-            "success": False,
-            "msg": f"Error!  ask for help!"
-        }
-    return reply
+        return rpl(tx_hash, False, f"Server error!  ask for help!")
 
 
 @socketio.on('was_beer_scanned')
 def handle_was_beer_scanned(tx_hash):
     """check if the trasaction was scanned"""
-    tx = database.select(
-        "select * from transactions where tx_hash = %s", (tx_hash,))
-
+    tx = database.select("select * from transactions where tx_hash = %s", (tx_hash,))
     reply = {"scanned": False, "scanned_at": None}
-
     if tx is None:
         return reply
-
     if tx['scanned_at'] is not None:
         reply = {
             "scanned": True,
             "scanned_at": str(tx['scanned_at'])
         }
-
     return reply
 
 
@@ -326,20 +321,14 @@ def handle_refund(access_key, wallet_address, amount):
     :param wallet_address: the account to refound
     :param amount: the amount to move
     """
-    reply = {"success": False, "tx_hash": None, "msg": None}
-    # check the authorization
-    if not authorize(access_key):
-        msg = f"Unauthorized access for key '{access_key}'"
-        logging.error(f"refund: {msg}")
-        reply['msg'] = msg
-        return reply
     # run the refund
     try:
+        # check authorization
+        authorize(access_key)
 
-        logging.debug(
-            "from '{}', to '{}', amount '{}'".format(
-                bar_wallet.get_address(), wallet_address, amount)
-        )
+        f, t, a = (bar_wallet.get_address(), wallet_address, amount)
+        logging.debug(f"from '{f}', to '{t}', amount '{a}'")
+        # execute the transaction
         _, tx_hash = epoch.spend(keypair=bar_wallet,
                                  recipient_pubkey=wallet_address,
                                  amount=int(amount))
@@ -349,74 +338,73 @@ def handle_refund(access_key, wallet_address, amount):
         if row is not None:
             wallet_name = row['wallet_name']
 
-        reply = {
-            "success": True,
-            "tx_hash": tx_hash,
-            "msg": f"Success! Refunded {amount} aet to {wallet_name}"
-        }
+        return rpl(tx_hash, True, f"Success! Refunded {amount} aet to {wallet_name}")
+    except UnauthorizedException as e:
+        return rpl(None, False, e.message)
     except Exception as e:
-        reply['msg'] = str(e)
-    return reply
+        logging.error(f"refund error {e}")
+        return rpl(None, False, str(e))
 
 
 @socketio.on('set_bar_state')
 def handle_set_bar_state(access_key, state):
 
-    reply = {"success": False, "msg": None}
-    # check the authorization
-    if not authorize(access_key):
-        reply['msg'] = f"Unauthorized access using key {access_key}, state {state}"
-        logging.error(reply['msg'])
-        return reply
-    # run the update
-    valid_states = ['open', 'closed', 'out_of_beers']
-    if state in valid_states:
+    try:
+        # check the authorization
+        authorize(access_key)
+        # check the state
+        valid_states = ['open', 'closed', 'out_of_beers']
+        if state not in valid_states:
+            raise UnsupportedStateException(state)
+        # run the update
         database.execute("update state set state = %s, updated_at = NOW()", (state,))
         # BROADCAST new status
         emit('bar_state', {"state": state}, broadcast=True)
         logging.info(f"set_bar_state: new state {state}")
-        reply = {"success": True, "msg": state}
-    else:
-        msg = f"Invalid invalid state {state}, allowed {','.join(valid_states)}"
-        logging.error(msg)
-        reply = {
-            "success": False,
-            "msg": msg
-        }
-    # reply to the sender
-    return reply
+        return rpl(None, True, state)
+    except UnauthorizedException as e:
+        return rpl(None, False, e.message)
+    except UnsupportedStateException as e:
+        logging.error(e.message)
+        return rpl(None, False, e.message)
+    except Exception as e:
+        logging.error(f"set bar state error {e}")
+        return rpl(None, False, str(e))
 
 
 @socketio.on('reset_bar')
 def handle_reset_bar(access_key):
     """reset the local height of the database to"""
-    reply = {"success": False, "msg": None}
-    # check the authorization
-    if not authorize(access_key):
-        reply['msg'] = f"Unauthorized access using key {access_key}"
-        logging.error(reply['msg'])
-        return reply
-    logging.info("RESET CHAINHEIGHT IN MIDDLEWARE DATABASE")
-    database.execute("update pos_height set block_id = %s", (0,))
-    # reply to the sender
-    reply = {"success": True, "msg": "chain reset"}
-    return reply
+    try:
+        # check authorization
+        authorize(access_key)
+        logging.info("RESET CHAIN HEIGHT IN MIDDLEWARE DATABASE")
+        database.execute("update pos_height set block_id = %s", (0,))
+        return rpl(None, False, "chain reset")
+    except UnauthorizedException as e:
+        return rpl(None, False, e.message)
+    except Exception as e:
+        logging.error(f"set bar state error {e}")
+        return rpl(None, False, str(e))
 
 
 @socketio.on('get_bar_state')
 def handle_get_bar_state():
-    """reply to a bar state request"""
-    row = database.select('select state from state limit 1')
-    bar_state = row['state']
-    # logging.info(f"retrieving bar state from database {bar_state}")
-    return {"state": bar_state}
+    try:
+        """reply to a bar state request"""
+        row = database.select('select state from state limit 1')
+        bar_state = row['state']
+        # logging.info(f"retrieving bar state from database {bar_state}")
+        return {"state": bar_state}
+    except Exception as e:
+        logging.error(f"error get_bar_state: {e}")
+        return {"state": "closed"}
 
 
 @socketio.on('get_name')
 def handle_get_name(public_key):
     """reverse mapping for the account name"""
-    row = database.select(
-        'select wallet_name from names where public_key = %s', (public_key,))
+    row = database.select('select wallet_name from names where public_key = %s', (public_key,))
     if row is not None:
         return {'name': row['wallet_name']}
     else:
