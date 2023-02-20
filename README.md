@@ -1,3 +1,6 @@
+## This repository has been archived on 20.02.2023
+The reason for the retirement is that the code is not used anymore.
+
 # Beer AEPP middelware
 
 handles transaction validation to the beer POS
